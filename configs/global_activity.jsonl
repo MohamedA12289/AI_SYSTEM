@@ -165,3 +165,11 @@
 {"id": "01556d39-a4b7-45ec-a2ab-67dc20b1df85", "project_name": "test-ep-proj", "action": "Task added", "detail": "t1", "type": "task", "metadata": {}, "timestamp": "2026-04-06T02:37:11.238007+00:00"}
 {"id": "9cba1d9a-6a06-4e40-a265-ea4d64f0a2a6", "project_name": "test-ep-proj", "action": "Note added", "detail": "c", "type": "note", "metadata": {}, "timestamp": "2026-04-06T02:37:15.330174+00:00"}
 {"id": "74c8d365-49b0-4c32-a79e-80d81b5035ec", "project_name": "test-ep-proj", "action": "Snapshot created", "detail": "e86bc925-7e0d-46ba-8737-ea2ea6dd4b35", "type": "snapshot", "metadata": {}, "timestamp": "2026-04-06T02:37:27.586222+00:00"}
+{"id": "a9de94c0-6ac4-4ba9-bd64-d91a90a0de88", "project_name": "test-ep-proj", "action": "Fetched URL", "detail": "https://example.com", "type": "web", "metadata": {}, "timestamp": "2026-04-06T02:38:48.055637+00:00"}
+{"id": "fb3c7fff-22aa-41c0-8957-002c20a71448", "project_name": "test-ep-proj", "action": "Web search", "detail": "test", "type": "web", "metadata": {}, "timestamp": "2026-04-06T02:38:50.251990+00:00"}
+{"id": "9e4670a2-e0bb-424b-9a60-dcc23272a8c4", "project_name": "test-ep-proj", "action": "Project created", "detail": "test-ep-proj", "type": "project", "metadata": {}, "timestamp": "2026-04-06T02:41:48.407716+00:00"}
+{"id": "e49bcb7d-d25a-4e44-ad3c-f280d3c208ca", "project_name": "test-ep-proj", "action": "Project updated", "detail": "test-ep-proj", "type": "project", "metadata": {}, "timestamp": "2026-04-06T02:41:52.503548+00:00"}
+{"id": "d4b12974-6756-47c7-af2c-b87e4eb44cff", "project_name": "test-ep-proj", "action": "Summary refreshed", "detail": "", "type": "memory", "metadata": {}, "timestamp": "2026-04-06T02:42:05.680281+00:00"}
+{"id": "707c5777-bd47-4dd4-8c40-037e0aaea059", "project_name": "test-ep-proj", "action": "Task added", "detail": "t1", "type": "task", "metadata": {}, "timestamp": "2026-04-06T02:42:09.772330+00:00"}
+{"id": "c8b87401-ae98-41f7-af3b-95266ff67b40", "project_name": "test-ep-proj", "action": "Note added", "detail": "c", "type": "note", "metadata": {}, "timestamp": "2026-04-06T02:42:13.876941+00:00"}
+{"id": "cc5d5e13-478d-4030-b8ee-086282d5c29b", "project_name": "test-ep-proj", "action": "Snapshot created", "detail": "8f15fe3d-7b5a-4b00-ad58-66189b674092", "type": "snapshot", "metadata": {}, "timestamp": "2026-04-06T02:42:26.157993+00:00"}

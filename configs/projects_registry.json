@@ -62,6 +62,17 @@
       "scope_root": "D:\\AI_SYSTEM\\workspaces\\testing",
       "archived": false,
       "created_at": "2026-04-04T23:55:48.538714+00:00"
+    },
+    {
+      "project_name": "test-ep-proj",
+      "display_name": "test-ep-proj",
+      "description": "updated",
+      "project_type": "standard",
+      "workspace_root": "D:\\AI_SYSTEM\\workspaces\\test-ep-proj",
+      "memory_root": "D:\\AI_SYSTEM\\memory\\projects\\test-ep-proj",
+      "scope_root": "D:\\AI_SYSTEM\\workspaces\\test-ep-proj",
+      "archived": false,
+      "created_at": "2026-04-06T02:41:48.404628+00:00"
     }
   ]
 }

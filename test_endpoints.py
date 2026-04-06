@@ -14,7 +14,7 @@ def t(method, path, json=None, expected_ok=True):
 tests = [
     ("GET",    "/"),
     ("GET",    "/projects"),
-    ("POST",   "/projects/create",                                  {"name": PROJ}),
+    ("POST",   "/projects/create",                                  {"project_name": PROJ}),
     ("GET",    f"/projects/{PROJ}"),
     ("PATCH",  f"/projects/{PROJ}",                                 {"description": "updated"}),
     ("GET",    f"/project/{PROJ}/scope"),
