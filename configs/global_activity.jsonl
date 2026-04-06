@@ -159,3 +159,9 @@
 {"id": "2562a019-669d-4e51-bf24-83982c6de64d", "project_name": "test-ep-proj", "action": "Task added", "detail": "t1", "type": "task", "metadata": {}, "timestamp": "2026-04-06T02:33:49.579551+00:00"}
 {"id": "90ef1a41-0c36-47ae-9fd0-497887016230", "project_name": "test-ep-proj", "action": "Note added", "detail": "c", "type": "note", "metadata": {}, "timestamp": "2026-04-06T02:33:53.688291+00:00"}
 {"id": "95784987-8382-4d28-94b6-698e2ae2e523", "project_name": "test-ep-proj", "action": "Snapshot created", "detail": "8ac4e06c-764c-4b30-922f-e0680c727498", "type": "snapshot", "metadata": {}, "timestamp": "2026-04-06T02:34:06.035605+00:00"}
+{"id": "8dd1cdca-f858-435f-b31d-fdafbfe25487", "project_name": "test-ep-proj", "action": "Fetched URL", "detail": "https://example.com", "type": "web", "metadata": {}, "timestamp": "2026-04-06T02:35:26.696157+00:00"}
+{"id": "6f894740-e29c-45dd-a650-d41c41d653cf", "project_name": "test-ep-proj", "action": "Web search", "detail": "test", "type": "web", "metadata": {}, "timestamp": "2026-04-06T02:35:28.845505+00:00"}
+{"id": "b6c5e5ad-5ad1-47e0-938f-5aea31cff0fe", "project_name": "test-ep-proj", "action": "Summary refreshed", "detail": "", "type": "memory", "metadata": {}, "timestamp": "2026-04-06T02:37:07.131368+00:00"}
+{"id": "01556d39-a4b7-45ec-a2ab-67dc20b1df85", "project_name": "test-ep-proj", "action": "Task added", "detail": "t1", "type": "task", "metadata": {}, "timestamp": "2026-04-06T02:37:11.238007+00:00"}
+{"id": "9cba1d9a-6a06-4e40-a265-ea4d64f0a2a6", "project_name": "test-ep-proj", "action": "Note added", "detail": "c", "type": "note", "metadata": {}, "timestamp": "2026-04-06T02:37:15.330174+00:00"}
+{"id": "74c8d365-49b0-4c32-a79e-80d81b5035ec", "project_name": "test-ep-proj", "action": "Snapshot created", "detail": "e86bc925-7e0d-46ba-8737-ea2ea6dd4b35", "type": "snapshot", "metadata": {}, "timestamp": "2026-04-06T02:37:27.586222+00:00"}
