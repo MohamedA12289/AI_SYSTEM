@@ -1,0 +1,22 @@
+USER: Say hello only.
+
+ASSISTANT: Hello! How can I assist you today?
+
+USER: Create a new file named approval_test.txt that says hello approval.
+
+USER: Create a new file named approval_test.txt that says hello approval.
+
+USER: Create a new file named approval_test.txt that says hello approval.
+
+USER: Say hello only.
+
+ASSISTANT: Hello! How can I assist you today?
+
+USER: Create a new file named approval_test.txt that says hello approval.
+
+USER: Create a new file named approval_test.txt that says hello approval.
+
+USER: Create a new file named approval_test.txt that says hello approval.
+
+ASSISTANT: Approval required for write_file.
+

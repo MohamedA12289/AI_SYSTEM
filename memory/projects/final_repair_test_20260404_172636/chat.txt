@@ -1,0 +1,21 @@
+USER: Create a new file named plan_mode_test.txt that says hello.
+
+ASSISTANT: I hit a tool-planning format issue. I can still talk through the task, but I did not execute any build action.
+
+USER: Create a new file named approval_test.txt that says hello approval.
+
+ASSISTANT: I hit a tool-planning format issue. I can still talk through the task, but I did not execute any build action.
+
+USER: [Voice Input] Tell me what happened with the audio.
+
+ASSISTANT: I'm sorry, but I don't have any context or details about an audio issue. Ca
+Can you provide more information so I can assist you better?
+
+USER: hi
+
+ASSISTANT: The multi-step agent loop has reached its maximum number of steps and stopp
+stopped. The task is partially complete as the agent has responded to the u
+user. No file changes, command results, or additional actions were taken be
+beyond this point. More steps may be needed depending on the next action re
+required.
+

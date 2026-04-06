@@ -1,0 +1,369 @@
+import type {
+  ActivityEntry,
+  AppSettings,
+  Approval,
+  AssistantMode,
+  DashboardSummary,
+  Document,
+  IngestJob,
+  MemoryEntry,
+  Note,
+  Project,
+  ProjectFile,
+  SearchResult,
+  Secret,
+  Snapshot,
+  Task,
+  TestCase,
+} from "@/types";
+
+const BASE = (import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
+
+async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const headers: Record<string, string> = { ...(options.headers as Record<string, string> | undefined) };
+  const body = options.body;
+  if (body && !(body instanceof FormData) && !headers["Content-Type"]) {
+    headers["Content-Type"] = "application/json";
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${path}`, { ...options, headers });
+  } catch (error: any) {
+    throw new Error(error?.message || "Failed to fetch");
+  }
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    let detail = text || `API ${res.status}`;
+    try {
+      const parsed = JSON.parse(text);
+      detail = parsed?.detail || parsed?.message || detail;
+    } catch {}
+    throw new Error(detail || `API ${res.status}`);
+  }
+
+  if (res.status === 204) return undefined as T;
+  return res.json() as Promise<T>;
+}
+
+function post<T>(path: string, body?: any) {
+  return request<T>(path, { method: "POST", body: body === undefined ? undefined : JSON.stringify(body) });
+}
+function patch<T>(path: string, body?: any) {
+  return request<T>(path, { method: "PATCH", body: body === undefined ? undefined : JSON.stringify(body) });
+}
+function del<T>(path: string) {
+  return request<T>(path, { method: "DELETE" });
+}
+
+export const api = {
+  health: () => request<{ status: string; phase: string }>("/"),
+
+  settings: {
+    get: () => request<AppSettings>("/settings"),
+    setAssistantMode: (mode: AssistantMode) => post<AppSettings>("/settings", { patch: { assistant: { mode } } }),
+    patch: (patchValue: any) => post<AppSettings>("/settings", { patch: patchValue }),
+  },
+
+  provider: {
+    get: () => request<{ active: string }>("/settings/provider"),
+    set: (active: string) => post<{ active: string; settings: AppSettings }>("/settings/provider", { active }),
+  },
+
+  models: {
+    list: () => request<{ active_model: string; models: string[] }>("/models"),
+    activate: (active_model: string) => post<any>("/models/active", { active_model }),
+    listOllama: () => request<{ models: string[]; error?: string }>("/ollama/models"),
+  },
+
+  groqModels: {
+    list: () => request<{ active_groq_model: string; groq_models: string[] }>("/groq/models"),
+    activate: (active_groq_model: string) => post<{ active_groq_model: string; settings: AppSettings }>("/groq/models/active", { active_groq_model }),
+  },
+
+  projects: {
+    list: async (): Promise<Project[]> => {
+      const data = await request<{ projects: Project[] }>("/projects");
+      return data.projects ?? [];
+    },
+    get: (projectName: string) => request<Project>(`/projects/${projectName}`),
+    create: (payload: { project_name: string; display_name?: string; description?: string; project_type?: string }) =>
+      post<{ created: boolean; project: Project }>("/projects/create", payload),
+    update: (projectName: string, payload: any) => patch<Project>(`/projects/${projectName}`, payload),
+    archive: (projectName: string) => post<Project>(`/projects/${projectName}/archive`, {}),
+    delete: (projectName: string) => del<{ deleted: boolean }>(`/projects/${projectName}`),
+    importExisting: (payload: { project_name: string; display_name?: string; description?: string; source_path: string; access_mode?: string }) =>
+      post<any>("/projects/import", payload),
+  },
+
+  chat: {
+    legacySend: (projectName: string, prompt: string) => post<{ response: string }>("/chat", { project_name: projectName, prompt }),
+    agentSend: (projectName: string, prompt: string, allow_writes = false, allow_commands = false) =>
+      post<any>("/agent/chat", { project_name: projectName, prompt, allow_writes, allow_commands }),
+    agentLoop: (projectName: string, prompt: string, allow_writes = false, allow_commands = false, max_steps = 4) =>
+      post<any>("/agent/loop", { project_name: projectName, prompt, allow_writes, allow_commands, max_steps }),
+    send: async (projectName: string, prompt: string, mode: AssistantMode) => {
+      if (mode === "build") {
+        try {
+          return await api.chat.agentLoop(projectName, prompt, false, false, 4);
+        } catch (loopErr: any) {
+          try {
+            return await api.chat.agentSend(projectName, prompt, false, false);
+          } catch (agentErr: any) {
+            throw agentErr;
+          }
+        }
+      }
+      const legacy = await api.chat.legacySend(projectName, prompt);
+      return {
+        assistant_message: legacy.response,
+        action_payload: { action: "respond", args: { message: legacy.response } },
+        tool_execution: { executed: true, action: "respond", message: legacy.response },
+      };
+    },
+    messages: (projectName: string, offset = 0, limit = 100) => request<{ items: any[]; total: number; has_more: boolean }>(`/project/${projectName}/messages?offset=${offset}&limit=${limit}`),
+    summary: (projectName: string) => request<any>(`/project/${projectName}/chat/summary`),
+    stream: (projectName: string, prompt: string, onToken: (t: string) => void, onDone: () => void, onError: (e: string) => void): (() => void) => {
+      const ctrl = new AbortController();
+      fetch(`${BASE}/chat/stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project_name: projectName, prompt }),
+        signal: ctrl.signal,
+      }).then(async (res) => {
+        const reader = res.body?.getReader();
+        const decoder = new TextDecoder();
+        if (!reader) { onDone(); return; }
+        let buf = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split("\n");
+          buf = lines.pop() ?? "";
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const data = line.slice(6).trim();
+            if (data === "[DONE]") { onDone(); return; }
+            try {
+              const obj = JSON.parse(data);
+              if (obj.token) onToken(obj.token);
+              if (obj.error) onError(obj.error);
+            } catch {}
+          }
+        }
+        onDone();
+      }).catch((err) => { if (err?.name !== "AbortError") onError(String(err)); });
+      return () => ctrl.abort();
+    },
+  },
+
+  files: {
+    list: (projectName: string, subpath = "") => request<{ project_name: string; items: ProjectFile[] }>(`/project/${projectName}/files?subpath=${encodeURIComponent(subpath)}`),
+    read: (projectName: string, path: string) => request<{ project_name: string; path: string; content: string }>(`/project/${projectName}/file?path=${encodeURIComponent(path)}`),
+    readRange: (projectName: string, path: string, startLine: number, endLine?: number) =>
+      request<{ project_name: string; path: string; start_line: number; end_line: number; total_lines: number; content: string }>(
+        `/project/${projectName}/file/range?path=${encodeURIComponent(path)}&start_line=${startLine}${endLine != null ? `&end_line=${endLine}` : ""}`
+      ),
+    write: (projectName: string, path: string, content: string) => post<any>(`/project/${projectName}/file/write`, { path, content }),
+    overwrite: (projectName: string, path: string, content: string) => post<any>(`/project/${projectName}/file/overwrite`, { path, content }),
+    diff: (projectName: string, path: string, proposed_content: string) => post<any>(`/project/${projectName}/file/diff`, { path, content: proposed_content }),
+    delete: (projectName: string, path: string) => del<any>(`/project/${projectName}/file?path=${encodeURIComponent(path)}`),
+  },
+
+  command: {
+    run: (projectName: string, command: string[], timeout_seconds = 30) =>
+      post<any>(`/project/${projectName}/command/run`, { command, timeout_seconds }),
+    stream: (
+      projectName: string,
+      command: string[],
+      onLine: (line: string) => void,
+      onDone: (exitCode: number) => void,
+      onError: (e: string) => void
+    ): (() => void) => {
+      const ctrl = new AbortController();
+      fetch(`${BASE}/project/${projectName}/command/stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ command, timeout_seconds: 60 }),
+        signal: ctrl.signal,
+      }).then(async (res) => {
+        const reader = res.body?.getReader();
+        const decoder = new TextDecoder();
+        if (!reader) { onDone(0); return; }
+        let buf = "";
+        let lastExit = 0;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split("\n");
+          buf = lines.pop() ?? "";
+          for (const ln of lines) {
+            if (!ln.startsWith("data: ")) continue;
+            const data = ln.slice(6).trim();
+            if (data === "[DONE]") { onDone(lastExit); return; }
+            try {
+              const obj = JSON.parse(data);
+              if (obj.line !== undefined) onLine(obj.line);
+              if (obj.exit_code !== undefined) lastExit = obj.exit_code;
+              if (obj.error) onError(obj.error);
+            } catch {}
+          }
+        }
+        onDone(lastExit);
+      }).catch((err) => { if (err?.name !== "AbortError") onError(String(err)); });
+      return () => ctrl.abort();
+    },
+  },
+
+  tasks: {
+    list: async (projectName: string): Promise<Task[]> => (await request<{ tasks: Task[] }>(`/project/${projectName}/tasks`)).tasks ?? [],
+    create: (projectName: string, title: string, status = "todo") => post<Task>(`/project/${projectName}/tasks`, { title, status }),
+    update: (projectName: string, id: string, payload: Partial<Task>) => patch<Task>(`/project/${projectName}/tasks/${id}`, payload),
+    delete: (projectName: string, id: string) => del<{ deleted: boolean }>(`/project/${projectName}/tasks/${id}`),
+  },
+
+  notes: {
+    list: async (projectName: string): Promise<Note[]> => (await request<{ notes: Note[] }>(`/project/${projectName}/notes`)).notes ?? [],
+    create: (projectName: string, content: string) => post<Note>(`/project/${projectName}/notes`, { content }),
+    update: (projectName: string, id: string, payload: Partial<Note>) => patch<Note>(`/project/${projectName}/notes/${id}`, payload),
+    delete: (projectName: string, id: string) => del<{ deleted: boolean }>(`/project/${projectName}/notes/${id}`),
+  },
+
+  memory: {
+    list: async (projectName: string): Promise<MemoryEntry[]> => (await request<{ entries: MemoryEntry[] }>(`/project/${projectName}/memory`)).entries ?? [],
+    create: (projectName: string, key: string, value: string, pinned = false) => post<MemoryEntry>(`/project/${projectName}/memory`, { key, value, pinned }),
+    update: (projectName: string, id: string, payload: Partial<MemoryEntry>) => patch<MemoryEntry>(`/project/${projectName}/memory/${id}`, payload),
+    delete: (projectName: string, id: string) => del<{ deleted: boolean }>(`/project/${projectName}/memory/${id}`),
+  },
+
+  secrets: {
+    list: async (): Promise<Secret[]> => (await request<{ items: Secret[] }>("/secrets")).items ?? [],
+    set: (key: string, value: string) => post<any>(`/secrets/${encodeURIComponent(key)}`, { value }),
+    reveal: (key: string) => post<any>(`/secrets/${encodeURIComponent(key)}/reveal`, {}),
+    delete: (key: string) => del<any>(`/secrets/${encodeURIComponent(key)}`),
+  },
+
+  approvals: {
+    list: async (projectName: string, status = "pending"): Promise<Approval[]> => (await request<{ items: Approval[] }>(`/project/${projectName}/approvals?status=${encodeURIComponent(status)}`)).items ?? [],
+    approve: (projectName: string, approvalId: string, note = "") => post<any>(`/project/${projectName}/approvals/${approvalId}/approve`, { note }),
+    reject: (projectName: string, approvalId: string, note = "") => post<any>(`/project/${projectName}/approvals/${approvalId}/reject`, { note }),
+  },
+
+  snapshots: {
+    list: async (projectName: string): Promise<Snapshot[]> => (await request<{ items: Snapshot[] }>(`/project/${projectName}/snapshots`)).items ?? [],
+    create: (projectName: string, note = "") => post<Snapshot>(`/project/${projectName}/snapshots`, { note }),
+    restore: (projectName: string, snapshotId: string) => post<any>(`/project/${projectName}/snapshots/${snapshotId}/restore`, {}),
+  },
+
+  tests: {
+    list: (projectName: string) => request<any>(`/project/${projectName}/tests`),
+    create: (projectName: string, title: string, command: string[], timeout_seconds = 30) => post<TestCase>(`/project/${projectName}/tests`, { title, command, timeout_seconds }),
+    run: (projectName: string, testId: string) => post<any>(`/project/${projectName}/tests/${testId}/run`, {}),
+    delete: (projectName: string, testId: string) => del<any>(`/project/${projectName}/tests/${testId}`),
+  },
+
+  dashboard: {
+    summary: (projectName: string, path: string) => post<DashboardSummary>(`/project/${projectName}/data/dashboard-summary`, { path }),
+  },
+
+  analysis: {
+    workspaceAnalyze: (projectName: string, paths: string[], focus = "Give a broad high-level analysis.") => post<any>(`/project/${projectName}/workspace/analyze`, { paths, focus }),
+    pairReview: (projectName: string, paths: string[], prompt = "Review this code and tell me the most important issues and improvements.") => post<any>(`/project/${projectName}/pair/review`, { paths, prompt }),
+    pairPlan: (projectName: string, paths: string[], prompt = "Create a practical implementation plan for these files.") => post<any>(`/project/${projectName}/pair/plan`, { paths, prompt }),
+    refactorPreview: (projectName: string, path: string, prompt = "Preview the best refactor for this file in plain language.") => post<any>(`/project/${projectName}/pair/refactor-preview`, { path, prompt }),
+    cowork: (projectName: string, mode: string, paths: string[], instruction = "Help improve this workspace and explain the next best actions.") => post<any>(`/project/${projectName}/cowork/instruction`, { mode, paths, instruction }),
+    deepResearch: (projectName: string, prompt: string) => post<any>(`/project/${projectName}/research/deep-report`, { prompt, save_report: false }),
+  },
+
+  source: {
+    link: (projectName: string, source_path: string, mode = "link_readonly") => post<any>(`/projects/${projectName}/source/link`, { source_path, mode }),
+  },
+
+  media: {
+    transcribe: (projectName: string, path: string, model_name = "base", task = "transcribe", language = "en") => post<any>(`/project/${projectName}/media/transcribe-file`, { path, model_name, task, language }),
+    voiceChat: (projectName: string, path: string, model_name = "base", task = "transcribe", language = "en") => post<any>(`/project/${projectName}/voice/chat`, { path, model_name, task, language }),
+  },
+
+  scaffold: {
+    app: (projectName: string, kind: string, target_dir: string, app_name = "generated_app") => post<any>(`/project/${projectName}/scaffold/app`, { kind, target_dir, app_name }),
+  },
+
+  github: {
+    status: (projectName: string) => request<any>(`/project/${projectName}/github/status`),
+    branches: (projectName: string) => request<any>(`/project/${projectName}/github/branches`),
+    commit: (projectName: string, message: string, paths?: string[]) => post<any>(`/project/${projectName}/github/commit`, { message, paths }),
+  },
+
+  activity: {
+    project: async (projectName: string, limit = 50): Promise<ActivityEntry[]> => (await request<{ items: ActivityEntry[] }>(`/project/${projectName}/activity?limit=${limit}`)).items ?? [],
+    global: async (limit = 50): Promise<ActivityEntry[]> => (await request<{ items: ActivityEntry[] }>(`/activity?limit=${limit}`)).items ?? [],
+  },
+
+  documents: {
+    list: async (projectName: string): Promise<Document[]> => (await request<{ documents: Document[] }>(`/project/${projectName}/documents`)).documents ?? [],
+    search: (projectName: string, query: string) => request<{ query: string; results: any[] }>(`/project/${projectName}/documents/search?query=${encodeURIComponent(query)}`),
+    detail: (projectName: string, documentId: string) => request<Document>(`/project/${projectName}/documents/${documentId}`),
+    content: (projectName: string, documentId: string) => request<any>(`/project/${projectName}/documents/${documentId}/content`),
+    summarize: (projectName: string, documentId: string) => post<any>(`/project/${projectName}/documents/${documentId}/summarize`, {}),
+  },
+
+  ingest: {
+    jobs: async (projectName: string): Promise<IngestJob[]> => (await request<{ jobs: IngestJob[] }>(`/project/${projectName}/ingest/jobs`)).jobs ?? [],
+    file: (projectName: string, source_path: string, access_mode = "import") => post<any>(`/project/${projectName}/ingest/file`, { source_path, access_mode }),
+    folder: (projectName: string, source_path: string, access_mode = "import") => post<any>(`/project/${projectName}/ingest/folder`, { source_path, access_mode }),
+    zip: (projectName: string, source_path: string, access_mode = "import") => post<any>(`/project/${projectName}/ingest/zip`, { source_path, access_mode }),
+  },
+
+  projectSearch: {
+    query: (projectName: string, query: string) => request<{ query: string; results: SearchResult[] }>(`/project/${projectName}/search?query=${encodeURIComponent(query)}`),
+  },
+
+  codeAgent: {
+    workspaceMap: (projectName: string, focus = "") => post<any>(`/project/${projectName}/coagent/workspace-map`, { focus }),
+    fileTargets: (projectName: string, task: string, contextFiles: string[] = []) => post<any>(`/project/${projectName}/coagent/file-targets`, { task, context_files: contextFiles }),
+    whyFailing: (projectName: string, errorText: string, contextFiles: string[] = [], recentChanges: string[] = []) => post<any>(`/project/${projectName}/coagent/why-failing`, { error_text: errorText, context_files: contextFiles, recent_changes: recentChanges }),
+    wiringTrace: (projectName: string, feature: string, startingFile = "") => post<any>(`/project/${projectName}/coagent/wiring-trace`, { feature, starting_file: startingFile }),
+    cleanupScan: (projectName: string) => post<any>(`/project/${projectName}/coagent/cleanup-scan`, {}),
+    apiContracts: (projectName: string) => post<any>(`/project/${projectName}/coagent/api-contracts`, {}),
+    projectState: (projectName: string, focus = "") => post<any>(`/project/${projectName}/coagent/project-state`, { focus }),
+    runCommand: (projectName: string, command: string[], timeout_seconds = 30) => post<any>(`/project/${projectName}/coagent/run-command`, { command, timeout_seconds }),
+    codingMemory: (projectName: string, action: "read" | "write", key = "", value = "", pinned = false) => post<any>(`/project/${projectName}/coagent/coding-memory`, { action, key, value, pinned }),
+  },
+
+  index: {
+    trigger: (projectName: string) => post<{ triggered: boolean; project_name: string }>(`/project/${projectName}/index/trigger`, {}),
+    status: (projectName: string) => request<{ status: string; last_indexed?: string; file_count?: number; error?: string }>(`/project/${projectName}/index/status`),
+  },
+};
+
+export function isoToTime(value?: string | null) {
+  if (!value) return "";
+  try {
+    return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  } catch {
+    return value;
+  }
+}
+
+export function groupTimestamp(value?: string | null): "today" | "yesterday" | "older" {
+  if (!value) return "older";
+  const d = new Date(value);
+  const now = new Date();
+  const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startYesterday = new Date(startToday); startYesterday.setDate(startYesterday.getDate() - 1);
+  if (d >= startToday) return "today";
+  if (d >= startYesterday) return "yesterday";
+  return "older";
+}
+
+export function projectToDisplay(p: Project) {
+  return {
+    id: p.project_name,
+    name: p.display_name || p.project_name,
+    description: p.description || "",
+    status: p.archived ? "archived" : "active",
+  };
+}

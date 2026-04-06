@@ -1,0 +1,6 @@
+{
+  "project_name": "smoke_test_project_final",
+  "summary_text": "User requested to create a file named \"approval_test.txt\" with the content \n\"hello approval\". The assistant responded with \"Hello.\" User repeated the r\nrequest multiple times, and the assistant provided the same response.",
+  "updated_at": "2026-04-04T17:40:46.443161+00:00",
+  "source_message_count": 8
+}

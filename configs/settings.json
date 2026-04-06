@@ -1,0 +1,12 @@
+{
+  "approval_mode": {
+    "writes_require_approval": true,
+    "commands_require_approval": true
+  },
+  "models": {
+    "active_model": "qwen2.5-coder:7b"
+  },
+  "assistant": {
+    "mode": "plan"
+  }
+}

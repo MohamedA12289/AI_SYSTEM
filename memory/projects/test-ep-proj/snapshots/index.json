@@ -1,0 +1,18 @@
+{
+  "items": [
+    {
+      "id": "10631810-44db-49ab-b7be-d28628c57e35",
+      "project_name": "test-ep-proj",
+      "note": "",
+      "created_at": "2026-04-06T02:26:10.177688+00:00",
+      "path": "D:\\AI_SYSTEM\\memory\\projects\\test-ep-proj\\snapshots\\10631810-44db-49ab-b7be-d28628c57e35\\workspace"
+    },
+    {
+      "id": "4833746b-46b8-4de1-9b74-0c0caaf1f6d3",
+      "project_name": "test-ep-proj",
+      "note": "",
+      "created_at": "2026-04-06T02:27:22.622971+00:00",
+      "path": "D:\\AI_SYSTEM\\memory\\projects\\test-ep-proj\\snapshots\\4833746b-46b8-4de1-9b74-0c0caaf1f6d3\\workspace"
+    }
+  ]
+}

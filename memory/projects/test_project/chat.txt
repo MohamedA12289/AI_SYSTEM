@@ -1,0 +1,195 @@
+USER: Write a Python hello world function.
+
+ASSISTANT: ```python
+def hello_world():
+    print("Hello, World!")
+```
+
+USER: Now make it return the string instead of printing it.
+
+ASSISTANT: Certainly! Here's the updated function that returns the string "Hello, Worl[4D[K
+World!" instead of printing it:
+
+```python
+def hello_world():
+    return "Hello, World!"
+```
+
+This function can be called and used in your code to get the greeting messa[5D[K
+message as a string.
+
+USER: Show me the files in this project.
+
+ASSISTANT: The project contains two items:
+
+1. `src/` - A directory
+2. `hello.py` - A Python file, 38 bytes in size.
+
+USER: Read hello.py and tell me what it does.
+
+ASSISTANT: `hello.py` contains a function `hello()` that returns the string `"hello wo[2D[K
+world"`.
+
+USER: Create a new file called src/sample.py with a function that returns the string hello from phase 2d.
+
+ASSISTANT: I want to write_file at 'src/sample.py', but write approval is currently off. Review the proposed content and resend with allow_writes=true if you want me to apply it.
+
+USER: Create a new file called src/sample.py with a function that returns the string hello from phase 2d.
+
+USER: Overwrite src/sample.py so it returns updated from phase 2d instead.
+
+USER: Create a new file called src/sample.py with a function that returns the string hello from phase 2d.
+
+ASSISTANT: I want to write_file at 'src/sample.py', but write approval is currently off. Review the proposed content and resend with allow_writes=true if you want me to apply it.
+
+USER: Overwrite src/sample.py so it returns updated from phase 2d instead.
+
+USER: Create a new file called src/sample.py with a function that returns the string hello from phase 2d.
+
+ASSISTANT: A new file named `src/sample.py` has been created with the following conten[6D[K
+content:
+
+```python
+def hello_phase_2d():
+    return 'hello from phase 2d'
+```
+
+This file now contains a function that returns the string "hello from phase[5D[K
+phase 2d".
+
+USER: Overwrite src/sample.py so it returns updated from phase 2d instead.
+
+ASSISTANT: `src/sample.py` has been updated. The function `hello_phase_2d()` now retur[5D[K
+returns `'updated from phase 2d'`.
+
+USER: Run a safe Python command that prints the exact text phase 2e agent test. Do not write or edit any files.
+
+ASSISTANT: I want to run this command: ['python', '-c', "print('phase 2e agent test')"], but command approval is currently off. Resend with allow_commands=true if you want me to execute it.
+
+USER: Run a safe Python command that prints the exact text phase 2e agent test. Do not write or edit any files.
+
+ASSISTANT: The command `python -c "print('phase 2e agent test')"` was executed success[7D[K
+successfully. It printed:
+
+```
+phase 2e agent test
+```
+
+USER: Run a safe Python command that prints the exact text phase 2e agent test. Do not write or edit any files.
+
+ASSISTANT: I want to run this command: ['python', '-c', "print('phase 2e agent test')"], but command approval is currently off. Resend with allow_commands=true if you want me to execute it.
+
+USER: Run a safe Python command that prints the exact text phase 2e agent test. Do not write or edit any files.
+
+ASSISTANT: The Python command `print('phase 2e agent test')` executed successfully. Th[2D[K
+The output was:
+
+```
+phase 2e agent test
+```
+
+USER: Go read https://example.com and summarize what that page says.
+
+ASSISTANT: The page at https://example.com has the following summary:
+
+**Title:** Example Domain
+
+**Key Points:**
+- This domain is used for documentation examples.
+- It should be avoided for operational purposes.
+- Learn more about proper usage by visiting the official documentation.
+
+USER: Go read passivepilot.io and summarize what that page says.
+
+ASSISTANT: PassivePilot.io is a real estate deal analysis platform that automates the [K
+process of identifying profitable deals. The website offers both free and p[1D[K
+premium versions:
+
+**Key Features:**
+- **Basic Analyzer:** Free tool for manual property entry, ARV & MAO calcul[6D[K
+calculations, and basic deal quality assessment.
+- **Premium Features:** AI-powered tools like live comps, owner lookup, and[3D[K
+and auto-fill via RentCast API. Access to a verified cash buyers database, [K
+CRM, pipeline tracker, calculators, and more.
+
+**Premium Benefits:**
+- Exclusive tools and resources for closing deals faster.
+- Weekly coaching calls with Aryone Thomas.
+- Access to the VIP Discord community with over 2,000 active wholesalers.
+- Instant results from live property data.
+- Unlimited upgrades at any time.
+
+**Community Testimonials:**
+Several testimonials highlight the effectiveness of the platform in closing[7D[K
+closing deals and scaling businesses. Members report significant profits an[2D[K
+and growth through the use of PassivePilot's tools and resources.
+
+**Pricing:**
+- Free version with limited features.
+- Premium ($20/month) unlocks all premium tools and community access.
+
+The website encourages users to sign up for the free trial or upgrade to th[2D[K
+the premium membership to unlock full potential.
+
+USER: Read https://example.com and tell me the page title and the key text content.
+
+ASSISTANT: The page at https://example.com has the following details:
+
+**Title:** Example Domain
+
+**Key Text Content:**
+Example Domain
+This domain is for use in documentation examples without needing permission[10D[K
+permission. Avoid use in operations. Learn more
+
+USER: Look through this project, inspect hello.py, and explain what it does.
+
+USER: Go read https://example.com and summarize the page for me.
+
+USER: Look through this project, inspect hello.py, and explain what it does.
+
+USER: Go read https://example.com and summarize the page for me.
+
+USER: Go read https://example.com and summarize the page for me.
+
+USER: Inspect this project and run a safe Python command that prints phase 2g command test.
+
+ASSISTANT: I want to run this command: ['python', '-c', "print('phase 2g command test')"], but command approval is currently off. Resend with allow_commands=true if you want me to execute it.
+
+USER: Run a safe Python command that prints the exact text phase 2g command test and then tell me the result.
+
+USER: Create a new file called src/loop_test.py with a function that returns hello from phase 2g.
+
+ASSISTANT: I want to write_file at 'src/loop_test.py', but write approval is currently off. Review the proposed content and resend with allow_writes=true if you want me to apply it.
+
+USER: Create a new file called src/loop_test.py with a function that returns hello from phase 2g.
+
+ASSISTANT: The loop created a new file `src/loop_test.py` with the function `hello_pha[10D[K
+`hello_phase_2g()` that returns 'hello from phase 2g'. The task is now comp[4D[K
+complete. No further steps are required.
+
+USER: Look through this project, inspect hello.py, and explain what it does.
+
+ASSISTANT: The project's multi-step agent loop has processed an action to read the con[3D[K
+contents of `hello.py`. The file contains a function `hello()` that returns[7D[K
+returns the string "hello world". 
+
+Task completion status: Partially complete. The loop has executed the reque[5D[K
+requested action and fetched the content of `hello.py`, but there are no fu[2D[K
+further steps defined in the provided information to proceed with.
+
+More steps needed: No specific additional actions or steps are outlined for[3D[K
+for this project.
+
+USER: Go read https://example.com and summarize the page for me.
+
+ASSISTANT: The agent fetched the content of `https://example.com`. The task is now com[3D[K
+complete. No additional steps are required.
+
+USER: Run a safe Python command that prints the exact text phase 2g command test and then tell me the result.
+
+ASSISTANT: The loop executed a Python command that prints "phase 2g command test". The[3D[K
+The task is finished with no errors. No further steps are required.
+
+USER: Create a new file called src/loop_test.py with a function that returns hello from phase 2g.
+

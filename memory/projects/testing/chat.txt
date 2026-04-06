@@ -1,0 +1,76 @@
+USER: hi
+
+ASSISTANT: Hello! How can I assist you with the "testing" project? Do you have a speci
+specific task or question in mind?
+
+USER: ok so this is for testing can i have a normal convo with you on build mode or no
+
+ASSISTANT: Yes, you can have a normal conversation with me in build mode. How can I as
+assist you today?
+
+USER: build me a basic game i can run on vs code without installing outside stuff
+
+ASSISTANT: Sure! Here's a simple text-based adventure game you can build in Python and
+and run in Visual Studio Code (VSCode):
+
+1. **Create a new file** named `adventure_game.py` in your project director
+directory (`D:\\AI_SYSTEM\\workspaces\\testing`).
+
+2. **Copy the following code** into the `adventure_game.py` file:
+
+```python
+import time
+
+def show_instructions():
+    print("You are standing at a crossroads.")
+    print("You can go North, South, East or West.")
+    print("Type 'go [direction]' to move in that direction.")
+    print("Type 'quit' to exit the game.")
+
+def play_game():
+    show_instructions()
+    
+    current_room = "start"
+    while True:
+        command = input("> ").lower().strip()
+        
+        if command == "quit":
+            print("Thanks for playing!")
+            break
+        
+        if command.startswith("go"):
+            direction = command.split()[1]
+            if direction == "north" and current_room == "start":
+                current_room = "north_room"
+                print("You are now in the North Room.")
+            elif direction == "south" and current_room == "start":
+                current_room = "south_room"
+                print("You are now in the South Room.")
+            elif direction == "east" and current_room == "start":
+                current_room = "east_room"
+                print("You are now in the East Room.")
+            elif direction == "west" and current_room == "start":
+                current_room = "west_room"
+                print("You are now in the West Room.")
+            else:
+                print("You can't go that way from here.")
+        else:
+            print("I don't understand that command.")
+
+if __name__ == "__main__":
+    play_game()
+```
+
+3. **Run the game** by pressing `F5` in VSCode or by running the following 
+command in the terminal:
+
+```sh
+python adventure_game.py
+```
+
+This is a very basic text-based game where you can navigate through differe
+different rooms using simple commands like `go north`, `go south`, etc. The
+The game continues until you type `quit`.
+
+You can expand this game by adding more rooms, items, and logic as needed.
+

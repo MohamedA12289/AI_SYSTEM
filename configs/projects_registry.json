@@ -1,0 +1,67 @@
+{
+  "projects": [
+    {
+      "project_name": "self_upgrade",
+      "display_name": "Self-Upgrade",
+      "description": "Special workspace with access to the AI system scope.",
+      "project_type": "self_upgrade",
+      "workspace_root": "D:\\",
+      "memory_root": "D:\\AI_SYSTEM\\memory\\projects\\self_upgrade",
+      "scope_root": "D:\\",
+      "created_at": "2026-04-04T00:12:31.832074+00:00"
+    },
+    {
+      "project_name": "personal_planner",
+      "display_name": "Personal Planner",
+      "description": "Test project for 2.5C",
+      "project_type": "standard",
+      "workspace_root": "D:\\AI_SYSTEM\\workspaces\\personal_planner",
+      "memory_root": "D:\\AI_SYSTEM\\memory\\projects\\personal_planner",
+      "scope_root": "D:\\AI_SYSTEM\\workspaces\\personal_planner",
+      "created_at": "2026-04-04T00:24:48.068107+00:00"
+    },
+    {
+      "project_name": "ui_sandbox",
+      "display_name": "UI Sandbox",
+      "description": "A new sandbox for UI development",
+      "project_type": "standard",
+      "workspace_root": "D:\\AI_SYSTEM\\workspaces\\ui_sandbox",
+      "memory_root": "D:\\AI_SYSTEM\\memory\\projects\\ui_sandbox",
+      "scope_root": "D:\\AI_SYSTEM\\workspaces\\ui_sandbox",
+      "created_at": "2026-04-04T00:53:59.933907+00:00"
+    },
+    {
+      "project_name": "smoke_test_project",
+      "display_name": "Smoke Test Project",
+      "description": "Smoke test project",
+      "project_type": "standard",
+      "workspace_root": "D:\\AI_SYSTEM\\workspaces\\smoke_test_project",
+      "memory_root": "D:\\AI_SYSTEM\\memory\\projects\\smoke_test_project",
+      "scope_root": "D:\\AI_SYSTEM\\workspaces\\smoke_test_project",
+      "archived": true,
+      "created_at": "2026-04-04T16:14:21.464801+00:00"
+    },
+    {
+      "project_name": "final_repair_test_20260404_172636",
+      "display_name": "Final Repair Test",
+      "description": "Focused backend retest",
+      "project_type": "standard",
+      "workspace_root": "D:\\AI_SYSTEM\\workspaces\\final_repair_test_20260404_172636",
+      "memory_root": "D:\\AI_SYSTEM\\memory\\projects\\final_repair_test_20260404_172636",
+      "scope_root": "D:\\AI_SYSTEM\\workspaces\\final_repair_test_20260404_172636",
+      "archived": false,
+      "created_at": "2026-04-04T21:26:48.565072+00:00"
+    },
+    {
+      "project_name": "testing",
+      "display_name": "testing",
+      "description": "teseting",
+      "project_type": "standard",
+      "workspace_root": "D:\\AI_SYSTEM\\workspaces\\testing",
+      "memory_root": "D:\\AI_SYSTEM\\memory\\projects\\testing",
+      "scope_root": "D:\\AI_SYSTEM\\workspaces\\testing",
+      "archived": false,
+      "created_at": "2026-04-04T23:55:48.538714+00:00"
+    }
+  ]
+}

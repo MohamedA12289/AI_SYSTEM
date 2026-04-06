@@ -1,0 +1,49 @@
+# secrets
+.env
+.env.*
+secrets/
+*.key
+*.pem
+
+# python
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# builds
+dist/
+build/
+out/
+coverage/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# local app junk
+models/
+cache/
+logs/
+tmp/
+temp/
+ui_cache/
+*_backup*/
+*_backups*/
+*.repairbac
+_smoke_assets*/
+repair_only_backup/
+hotfix_backup*/
+gpt_fix_backup/
+wave2_backups/
+
+# archives
+*.zip

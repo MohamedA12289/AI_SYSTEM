@@ -1,0 +1,43 @@
+{
+  "tests": [],
+  "runs": [
+    {
+      "id": "817e52b4-23f3-4b7c-af13-2a6e605e8762",
+      "test_id": "4722a4a3-bd02-4689-a2d5-ca2ab2167d3c",
+      "title": "Smoke Title",
+      "timestamp": "2026-04-04T17:37:05.918294+00:00",
+      "result": {
+        "executed": true,
+        "timed_out": false,
+        "command": [
+          "python",
+          "-c",
+          "print('smoke_test')"
+        ],
+        "cwd": "D:\\AI_SYSTEM\\workspaces\\smoke_test_project_final",
+        "exit_code": 0,
+        "stdout": "smoke_test\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "43591109-ba94-49d7-9897-a59391ab7198",
+      "test_id": "60a4fc01-32f8-4c5f-8e9a-ea1e36fe1446",
+      "title": "Smoke Title",
+      "timestamp": "2026-04-04T17:40:55.920451+00:00",
+      "result": {
+        "executed": true,
+        "timed_out": false,
+        "command": [
+          "python",
+          "-c",
+          "print('smoke_test')"
+        ],
+        "cwd": "D:\\AI_SYSTEM\\workspaces\\smoke_test_project_final",
+        "exit_code": 0,
+        "stdout": "smoke_test\n",
+        "stderr": ""
+      }
+    }
+  ]
+}

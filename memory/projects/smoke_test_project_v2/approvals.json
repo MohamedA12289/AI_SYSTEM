@@ -1,0 +1,19 @@
+{
+  "items": [
+    {
+      "id": "836642f1-5f48-4f86-afad-1a1691f4bee9",
+      "project_name": "smoke_test_project_v2",
+      "approval_type": "write_file",
+      "status": "pending",
+      "summary": "write_file ",
+      "payload": {
+        "path": "",
+        "content": "hello approval",
+        "diff": "--- :before\n+++ :after\n@@ -0,0 +1 @@\n+hello approval"
+      },
+      "created_at": "2026-04-04T17:40:10.713203+00:00",
+      "resolved_at": null,
+      "resolution_note": ""
+    }
+  ]
+}

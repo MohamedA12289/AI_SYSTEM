@@ -1,0 +1,18 @@
+USER: Say hello only.
+
+ASSISTANT: Hello.
+
+USER: Create a new file named approval_test.txt that says hello approval.
+
+USER: Say hello only.
+
+ASSISTANT: Hello.
+
+USER: Create a new file named approval_test.txt that says hello approval.
+
+USER: Say hello only.
+
+ASSISTANT: 
+
+USER: Create a new file named approval_test.txt that says hello approval.
+
