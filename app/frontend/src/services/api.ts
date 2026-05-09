@@ -2,7 +2,6 @@ import type {
   ActivityEntry,
   AppSettings,
   Approval,
-  AssistantMode,
   DashboardSummary,
   Document,
   IngestJob,
@@ -15,9 +14,29 @@ import type {
   Snapshot,
   Task,
   TestCase,
+  Thread,
+  ThreadMessage,
 } from "@/types";
 
-const BASE = (import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
+let BASE = (import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
+
+async function initializeBaseUrl() {
+  if (typeof window !== 'undefined' && (window as any).cubosDesktop?.getBackendPort) {
+    try {
+      const result = await (window as any).cubosDesktop.getBackendPort();
+      if (result.ok && result.port) {
+        BASE = `http://127.0.0.1:${result.port}`;
+        console.log('[API] Using dynamic backend port:', result.port);
+      }
+    } catch (error) {
+      console.warn('[API] Failed to get backend port, using default:', error);
+    }
+  }
+}
+
+initializeBaseUrl();
+
+export function getApiBase(): string { return BASE; }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = { ...(options.headers as Record<string, string> | undefined) };
@@ -53,6 +72,9 @@ function post<T>(path: string, body?: any) {
 function patch<T>(path: string, body?: any) {
   return request<T>(path, { method: "PATCH", body: body === undefined ? undefined : JSON.stringify(body) });
 }
+function put<T>(path: string, body?: any) {
+  return request<T>(path, { method: "PUT", body: body === undefined ? undefined : JSON.stringify(body) });
+}
 function del<T>(path: string) {
   return request<T>(path, { method: "DELETE" });
 }
@@ -62,7 +84,6 @@ export const api = {
 
   settings: {
     get: () => request<AppSettings>("/settings"),
-    setAssistantMode: (mode: AssistantMode) => post<AppSettings>("/settings", { patch: { assistant: { mode } } }),
     patch: (patchValue: any) => post<AppSettings>("/settings", { patch: patchValue }),
   },
 
@@ -93,8 +114,6 @@ export const api = {
     update: (projectName: string, payload: any) => patch<Project>(`/projects/${projectName}`, payload),
     archive: (projectName: string) => post<Project>(`/projects/${projectName}/archive`, {}),
     delete: (projectName: string) => del<{ deleted: boolean }>(`/projects/${projectName}`),
-    importExisting: (payload: { project_name: string; display_name?: string; description?: string; source_path: string; access_mode?: string }) =>
-      post<any>("/projects/import", payload),
   },
 
   chat: {
@@ -103,25 +122,6 @@ export const api = {
       post<any>("/agent/chat", { project_name: projectName, prompt, allow_writes, allow_commands }),
     agentLoop: (projectName: string, prompt: string, allow_writes = false, allow_commands = false, max_steps = 4) =>
       post<any>("/agent/loop", { project_name: projectName, prompt, allow_writes, allow_commands, max_steps }),
-    send: async (projectName: string, prompt: string, mode: AssistantMode) => {
-      if (mode === "build") {
-        try {
-          return await api.chat.agentLoop(projectName, prompt, false, false, 4);
-        } catch (loopErr: any) {
-          try {
-            return await api.chat.agentSend(projectName, prompt, false, false);
-          } catch (agentErr: any) {
-            throw agentErr;
-          }
-        }
-      }
-      const legacy = await api.chat.legacySend(projectName, prompt);
-      return {
-        assistant_message: legacy.response,
-        action_payload: { action: "respond", args: { message: legacy.response } },
-        tool_execution: { executed: true, action: "respond", message: legacy.response },
-      };
-    },
     messages: (projectName: string, offset = 0, limit = 100) => request<{ items: any[]; total: number; has_more: boolean }>(`/project/${projectName}/messages?offset=${offset}&limit=${limit}`),
     summary: (projectName: string) => request<any>(`/project/${projectName}/chat/summary`),
     stream: (projectName: string, prompt: string, onToken: (t: string) => void, onDone: () => void, onError: (e: string) => void): (() => void) => {
@@ -159,6 +159,67 @@ export const api = {
     },
   },
 
+  threads: {
+    list: (projectName: string) => request<{ threads: Thread[] }>(`/api/projects/${projectName}/threads`),
+    create: (projectName: string, title?: string) =>
+      post<{ thread: Thread }>(`/api/projects/${projectName}/threads`, { title }),
+    get: (threadId: string) => request<{ thread: Thread }>(`/api/threads/${threadId}`),
+    updateTitle: (threadId: string, title: string) =>
+      put<{ thread: Thread }>(`/api/threads/${threadId}/title`, { title }),
+    delete: (threadId: string) => del<{ deleted: boolean }>(`/api/threads/${threadId}`),
+    messages: (threadId: string, offset = 0, limit = 100) =>
+      request<{ items: ThreadMessage[]; total: number; has_more: boolean }>(`/api/threads/${threadId}/messages?offset=${offset}&limit=${limit}`),
+    sendMessage: (threadId: string, content: string) =>
+      post<{ message: ThreadMessage; auto_titled?: boolean }>(`/api/threads/${threadId}/messages`, { role: "user", content }),
+    messageCount: (threadId: string) => request<{ count: number }>(`/api/threads/${threadId}/messages/count`),
+    stream: (
+      threadId: string,
+      prompt: string,
+      onToken: (t: string) => void,
+      onDone: () => void,
+      onError: (e: string) => void,
+      opts?: { enableTools?: boolean; onTool?: (tool: { name: string; args: any; result_preview: string }) => void }
+    ): (() => void) => {
+      const ctrl = new AbortController();
+      fetch(`${BASE}/api/threads/${threadId}/stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt, enable_tools: !!opts?.enableTools }),
+        signal: ctrl.signal,
+      }).then(async (res) => {
+        const reader = res.body?.getReader();
+        const decoder = new TextDecoder();
+        if (!reader) { onDone(); return; }
+        let buf = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split("\n");
+          buf = lines.pop() ?? "";
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const data = line.slice(6).trim();
+            if (data === "[DONE]") { onDone(); return; }
+            try {
+              const obj = JSON.parse(data);
+              if (obj.token) onToken(obj.token);
+              if (obj.tool && opts?.onTool) opts.onTool(obj.tool);
+              if (obj.error) onError(obj.error);
+            } catch {}
+          }
+        }
+        onDone();
+      }).catch((err) => { if (err?.name !== "AbortError") onError(String(err)); });
+      return () => {
+        // Tell the server to stop generating, then abort the local fetch.
+        fetch(`${BASE}/api/threads/${threadId}/cancel`, { method: "POST" }).catch(() => null);
+        ctrl.abort();
+      };
+    },
+    cancel: (threadId: string) => post<{ ok: boolean }>(`/api/threads/${threadId}/cancel`, {}),
+  },
+
   files: {
     list: (projectName: string, subpath = "") => request<{ project_name: string; items: ProjectFile[] }>(`/project/${projectName}/files?subpath=${encodeURIComponent(subpath)}`),
     read: (projectName: string, path: string) => request<{ project_name: string; path: string; content: string }>(`/project/${projectName}/file?path=${encodeURIComponent(path)}`),
@@ -170,6 +231,11 @@ export const api = {
     overwrite: (projectName: string, path: string, content: string) => post<any>(`/project/${projectName}/file/overwrite`, { path, content }),
     diff: (projectName: string, path: string, proposed_content: string) => post<any>(`/project/${projectName}/file/diff`, { path, content: proposed_content }),
     delete: (projectName: string, path: string) => del<any>(`/project/${projectName}/file?path=${encodeURIComponent(path)}`),
+    search: (projectName: string, query: string) => request<{ results: any[] }>(`/project/${projectName}/files/search?q=${encodeURIComponent(query)}`),
+  },
+
+  diagnostics: {
+    run: (projectName: string) => request<{ problems: any[] }>(`/project/${projectName}/diagnostics`),
   },
 
   command: {
@@ -220,7 +286,8 @@ export const api = {
 
   tasks: {
     list: async (projectName: string): Promise<Task[]> => (await request<{ tasks: Task[] }>(`/project/${projectName}/tasks`)).tasks ?? [],
-    create: (projectName: string, title: string, status = "todo") => post<Task>(`/project/${projectName}/tasks`, { title, status }),
+    create: (projectName: string, title: string, status = "todo", description?: string) =>
+      post<Task>(`/project/${projectName}/tasks`, { title, status, description }),
     update: (projectName: string, id: string, payload: Partial<Task>) => patch<Task>(`/project/${projectName}/tasks/${id}`, payload),
     delete: (projectName: string, id: string) => del<{ deleted: boolean }>(`/project/${projectName}/tasks/${id}`),
   },
@@ -240,7 +307,7 @@ export const api = {
   },
 
   secrets: {
-    list: async (): Promise<Secret[]> => (await request<{ items: Secret[] }>("/secrets")).items ?? [],
+    list: async (masked = true): Promise<Secret[]> => (await request<{ items: Secret[] }>(`/secrets?masked=${masked}`)).items ?? [],
     set: (key: string, value: string) => post<any>(`/secrets/${encodeURIComponent(key)}`, { value }),
     reveal: (key: string) => post<any>(`/secrets/${encodeURIComponent(key)}/reveal`, {}),
     delete: (key: string) => del<any>(`/secrets/${encodeURIComponent(key)}`),
@@ -285,6 +352,15 @@ export const api = {
   media: {
     transcribe: (projectName: string, path: string, model_name = "base", task = "transcribe", language = "en") => post<any>(`/project/${projectName}/media/transcribe-file`, { path, model_name, task, language }),
     voiceChat: (projectName: string, path: string, model_name = "base", task = "transcribe", language = "en") => post<any>(`/project/${projectName}/voice/chat`, { path, model_name, task, language }),
+    transcribeUpload: async (projectName: string, file: File, model_name = "base", task = "transcribe"): Promise<any> => {
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("model_name", model_name);
+      formData.append("task", task);
+      const resp = await fetch(`${BASE}/project/${projectName}/media/transcribe-upload`, { method: "POST", body: formData });
+      if (!resp.ok) throw new Error(await resp.text());
+      return resp.json();
+    },
   },
 
   scaffold: {
@@ -295,6 +371,21 @@ export const api = {
     status: (projectName: string) => request<any>(`/project/${projectName}/github/status`),
     branches: (projectName: string) => request<any>(`/project/${projectName}/github/branches`),
     commit: (projectName: string, message: string, paths?: string[]) => post<any>(`/project/${projectName}/github/commit`, { message, paths }),
+    authStatus: (state: string) => request<{ authenticated: boolean; username?: string }>(`/api/github/auth/status?state=${encodeURIComponent(state)}`),
+    createRepo: (payload: { name: string; description?: string; private?: boolean; project_path?: string; state: string; push?: boolean }) =>
+      post<any>(`/api/github/auth/repos/create`, payload),
+  },
+
+  git: {
+    status: (projectName: string) => request<any>(`/project/${projectName}/git/status`),
+    currentBranch: (projectName: string) => request<{ branch: string }>(`/project/${projectName}/git/branch`),
+    branches: (projectName: string) => request<{ branches: string[] }>(`/project/${projectName}/git/branches`),
+    commit: (projectName: string, message: string, files?: string[]) => post<any>(`/project/${projectName}/git/commit`, { message, files }),
+    push: (projectName: string) => post<any>(`/project/${projectName}/git/push`, {}),
+    pull: (projectName: string) => post<any>(`/project/${projectName}/git/pull`, {}),
+    cloneProject: (repoUrl: string, projectName?: string) => post<any>(`/projects/clone-git`, { repo_url: repoUrl, project_name: projectName }),
+    init: (project_path: string, initial_commit = true) => post<any>(`/api/git/init`, { project_path, initial_commit }),
+    setRemote: (project_path: string, remote_url: string, name = "origin") => post<any>(`/api/git/set-remote`, { project_path, remote_url, name }),
   },
 
   activity: {

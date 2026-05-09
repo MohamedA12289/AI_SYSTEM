@@ -1,15 +1,21 @@
 from __future__ import annotations
 from wave2_routes import router as wave2_router
 from wave1_router import router as wave1_router
+from thread_routes import router as thread_router
 
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, WebSocket, UploadFile, File as FileField, Form
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import ast
+import os
 import json
 import re
+import shutil
+import subprocess
+import tempfile
+from typing import Optional
 from uuid import uuid4
 from datetime import datetime, timezone
 
@@ -49,14 +55,23 @@ from agent_tools import execute_agent_action
 from wave34_routes import router as wave34_router
 from hotfix_routes import router as hotfix_router
 from code_agent_routes import router as code_agent_router
+from api.git import router as git_router
+from api.github_auth import router as github_auth_router
+from api.customization import router as customization_router
+from api.tasks import router as tasks_router
+from api.artifacts import router as artifacts_router
+from advanced_routes import router as advanced_router
+from file_extractor_routes import router as file_extractor_router
 from project_registry import (
     ensure_projects_registry,
     list_registered_projects,
     create_project,
+    import_project,
     get_registered_project,
     update_project,
     delete_project,
 )
+from migration_threads import run_migration_on_startup
 from approvals import list_approvals, get_approval, resolve_approval
 from activity import read_project_activity, read_global_activity, log_activity
 from snapshots import list_snapshots, create_snapshot, restore_snapshot
@@ -87,6 +102,14 @@ app.include_router(wave34_router)
 app.include_router(wave2_router)
 app.include_router(wave1_router)
 app.include_router(code_agent_router)
+app.include_router(advanced_router)
+app.include_router(thread_router)
+app.include_router(git_router)
+app.include_router(github_auth_router)
+app.include_router(customization_router)
+app.include_router(tasks_router)
+app.include_router(artifacts_router)
+app.include_router(file_extractor_router)
 
 RUN_STORE: dict[str, dict] = {}
 INDEX_STATUS: dict[str, dict] = {}
@@ -123,10 +146,17 @@ class CreateProjectRequest(BaseModel):
     display_name: str | None = None
     description: str = ""
 
+class ImportProjectRequest(BaseModel):
+    path: str
+    display_name: str | None = None
+    description: str = ""
+
 class UpdateProjectRequest(BaseModel):
     display_name: str | None = None
     description: str | None = None
     archived: bool | None = None
+
+
 
 class AgentChatRequest(BaseModel):
     project_name: str
@@ -144,10 +174,12 @@ class AgentLoopRequest(BaseModel):
 class TaskCreateRequest(BaseModel):
     title: str
     status: str = "todo"
+    description: str | None = None
 
 class TaskUpdateRequest(BaseModel):
     title: str | None = None
     status: str | None = None
+    description: str | None = None
 
 class NoteCreateRequest(BaseModel):
     content: str
@@ -579,9 +611,18 @@ def _auto_index_loop():
 
 
 @app.on_event("startup")
-def startup_tasks():
+def startup_event():
     import threading
     ensure_projects_registry()
+
+    # Run migration in background thread to avoid blocking startup
+    def run_migration_async():
+        try:
+            run_migration_on_startup()
+        except Exception as e:
+            print(f"Migration error: {e}")
+
+    threading.Thread(target=run_migration_async, daemon=True).start()
     threading.Thread(target=_auto_index_loop, daemon=True).start()
 
 @app.get("/")
@@ -600,6 +641,19 @@ def create_project_endpoint(request: CreateProjectRequest):
         return {"created": True, "project": project}
     except FileExistsError as e:
         raise HTTPException(status_code=409, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/projects/import")
+def import_project_endpoint(request: ImportProjectRequest):
+    try:
+        project = import_project(path=request.path, display_name=request.display_name, description=request.description)
+        log_activity(project["project_name"], "Project imported", request.path, type="project")
+        return {"imported": True, "project": project}
+    except FileExistsError as e:
+        raise HTTPException(status_code=409, detail={"project_name": str(e), "message": "Project already exists."})
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -741,7 +795,7 @@ def get_tasks(project_name: str):
 @app.post("/project/{project_name}/tasks")
 def create_task_endpoint(project_name: str, request: TaskCreateRequest):
     data = read_tasks(project_name)
-    task = {"id": str(uuid4()), "title": request.title, "status": request.status, "created_at": now_iso()}
+    task = {"id": str(uuid4()), "title": request.title, "status": request.status, "description": request.description or "", "created_at": now_iso()}
     data.setdefault("tasks", []).append(task)
     write_tasks(project_name, data)
     log_activity(project_name, "Task added", request.title, type="task")
@@ -756,6 +810,8 @@ def update_task_endpoint(project_name: str, task_id: str, request: TaskUpdateReq
                 task["title"] = request.title
             if request.status is not None:
                 task["status"] = request.status
+            if request.description is not None:
+                task["description"] = request.description
             write_tasks(project_name, data)
             log_activity(project_name, "Task updated", task.get("title", ""), type="task")
             return task
@@ -882,6 +938,35 @@ def get_file_range(project_name: str, path: str = Query(...), start_line: int = 
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+@app.get("/project/{project_name}/files/search")
+def search_files_endpoint(project_name: str, q: str = Query(..., description="Search query")):
+    try:
+        return search_project(project_name, q)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/project/{project_name}/git/branch")
+def get_git_branch_endpoint(project_name: str):
+    try:
+        from file_tools import get_project_root
+        import subprocess
+        project_root = str(get_project_root(project_name))
+        result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if result.returncode == 0:
+            branch = result.stdout.strip() or "main"
+            return {"branch": branch}
+        return {"branch": "main"}
+    except Exception as e:
+        return {"branch": "main"}
+
 @app.post("/project/{project_name}/file/diff")
 def get_file_diff(project_name: str, request: FileWriteRequest):
     try:
@@ -928,6 +1013,47 @@ def delete_file_endpoint(project_name: str, path: str = Query(...)):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+@app.post("/project/{project_name}/directory")
+def create_directory(project_name: str, request: dict):
+    try:
+        from file_tools import resolve_safe_path
+        dir_path = (request.get("path") or "").strip()
+        if not dir_path:
+            raise HTTPException(status_code=400, detail="Path cannot be empty.")
+        target = resolve_safe_path(project_name, dir_path)
+        target.mkdir(parents=True, exist_ok=True)
+        log_activity(project_name, "Directory created", dir_path, type="file")
+        return {"status": "created", "project_name": project_name, "path": dir_path}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/project/{project_name}/file/move")
+def move_file(project_name: str, request: dict):
+    try:
+        from file_tools import resolve_safe_path
+        from_path = (request.get("from") or request.get("from_path") or "").strip()
+        to_path = (request.get("to") or request.get("to_path") or "").strip()
+        if not from_path or not to_path:
+            raise HTTPException(status_code=400, detail="Both 'from' and 'to' paths are required.")
+        src = resolve_safe_path(project_name, from_path)
+        dst = resolve_safe_path(project_name, to_path)
+        if not src.exists():
+            raise HTTPException(status_code=404, detail="Source path does not exist.")
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        src.rename(dst)
+        log_activity(project_name, "File moved", f"{from_path} -> {to_path}", type="file")
+        return {"status": "moved", "project_name": project_name, "from": from_path, "to": to_path}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/project/{project_name}/command/run")
 def run_command_endpoint(project_name: str, request: CommandRunRequest):
     try:
@@ -967,6 +1093,45 @@ def stream_command_endpoint(project_name: str, request: CommandRunRequest):
 
     log_activity(project_name, "Command stream", " ".join(request.command), type="command")
     return StreamingResponse(event_generator(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+@app.get("/project/{project_name}/diagnostics")
+def get_diagnostics(project_name: str):
+    import subprocess, re
+    try:
+        from file_tools import get_project_root
+        cwd = str(get_project_root(project_name))
+    except Exception:
+        return {"problems": []}
+
+    problems = []
+    tsconfig = os.path.join(cwd, "tsconfig.json")
+    if os.path.exists(tsconfig):
+        try:
+            result = subprocess.run(
+                ["npx", "tsc", "--noEmit", "--pretty", "false"],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            output = result.stdout + result.stderr
+            pattern = re.compile(r"^(.+?)\((\d+),(\d+)\):\s+(error|warning|info)\s+(TS\d+):\s+(.+)$", re.MULTILINE)
+            for m in pattern.finditer(output):
+                file_path, line, col, severity, code, message = m.groups()
+                problems.append({
+                    "id": f"ts-{len(problems)}",
+                    "severity": severity if severity in ("error", "warning", "info") else "error",
+                    "message": message.strip(),
+                    "source": "TypeScript",
+                    "file": file_path.replace("\\", "/").replace(cwd.replace("\\", "/") + "/", ""),
+                    "line": int(line),
+                    "column": int(col),
+                    "code": code,
+                })
+        except Exception:
+            pass
+
+    return {"problems": problems}
 
 @app.post("/project/{project_name}/web/fetch")
 def fetch_web_endpoint(project_name: str, request: WebFetchRequest):
@@ -1184,11 +1349,18 @@ class ProviderSetRequest(BaseModel):
 
 @app.post("/settings/provider")
 def set_provider(request: ProviderSetRequest):
+    from settings_store import VALID_PROVIDERS
     provider = request.active.strip().lower()
-    if provider not in {"ollama", "groq"}:
-        raise HTTPException(status_code=400, detail="active must be 'ollama' or 'groq'")
+    if provider not in VALID_PROVIDERS:
+        raise HTTPException(status_code=400, detail=f"active must be one of {sorted(VALID_PROVIDERS)}")
     settings = update_settings({"ai_provider": {"active": provider}})
     return {"active": provider, "settings": settings}
+
+@app.get("/settings/providers")
+def get_providers():
+    """Return all providers, their active model, and the available model list for each."""
+    from settings_store import list_provider_models
+    return list_provider_models()
 
 @app.get("/groq/models")
 def get_groq_models():
@@ -1205,6 +1377,174 @@ def activate_groq_model(request: GroqModelActivateRequest):
         raise HTTPException(status_code=400, detail=f"Unknown Groq model: {model}")
     settings = update_settings({"ai_provider": {"groq_model": model}})
     return {"active_groq_model": model, "settings": settings}
+
+class ProviderModelActivateRequest(BaseModel):
+    provider: str
+    model: str
+
+@app.post("/settings/provider/model")
+def activate_provider_model(request: ProviderModelActivateRequest):
+    """Set the active model for any cloud provider (openai, anthropic, openrouter, groq)."""
+    from settings_store import VALID_PROVIDERS
+    from config import (
+        GROQ_AVAILABLE_MODELS,
+        OPENAI_AVAILABLE_MODELS,
+        ANTHROPIC_AVAILABLE_MODELS,
+        OPENROUTER_AVAILABLE_MODELS,
+    )
+    provider = request.provider.strip().lower()
+    model = request.model.strip()
+    if provider not in VALID_PROVIDERS:
+        raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")
+    allowed = {
+        "groq": GROQ_AVAILABLE_MODELS,
+        "openai": OPENAI_AVAILABLE_MODELS,
+        "anthropic": ANTHROPIC_AVAILABLE_MODELS,
+        "openrouter": OPENROUTER_AVAILABLE_MODELS,
+    }.get(provider)
+    if allowed is not None and model not in allowed:
+        # Allow custom models but warn via response; still accept to be flexible.
+        pass
+    field = {
+        "groq": "groq_model",
+        "openai": "openai_model",
+        "anthropic": "anthropic_model",
+        "openrouter": "openrouter_model",
+        "ollama": "active_model",
+    }[provider]
+    if provider == "ollama":
+        settings = update_settings({"models": {"active_model": model}})
+    else:
+        settings = update_settings({"ai_provider": {field: model}})
+    return {"provider": provider, "model": model, "settings": settings}
+
+@app.get("/roles")
+def get_roles():
+    """List available agent role prompts (architect, developer, tech-lead, ...)."""
+    from role_prompts import list_roles
+    return {"roles": list_roles()}
+
+@app.get("/roles/{role}")
+def get_role(role: str):
+    from role_prompts import get_role_prompt
+    text = get_role_prompt(role)
+    if text is None:
+        raise HTTPException(status_code=404, detail=f"Unknown role: {role}")
+    return {"role": role, "prompt": text}
+
+# ---- Themes ----
+@app.get("/themes")
+def list_themes_endpoint():
+    from theme_store import list_themes, get_active
+    return {"themes": list_themes(), "active": get_active().get("name")}
+
+@app.get("/themes/active")
+def get_active_theme_endpoint():
+    from theme_store import get_active
+    return get_active()
+
+@app.post("/themes/active")
+def set_active_theme_endpoint(payload: dict):
+    from theme_store import set_active
+    return set_active(payload.get("name", ""))
+
+@app.post("/themes")
+def save_theme_endpoint(payload: dict):
+    from theme_store import save_theme
+    return save_theme(payload.get("name", ""), payload.get("data", payload))
+
+# ---- Slash commands ----
+@app.get("/slash/commands")
+def list_slash_commands_endpoint():
+    from slash_commands import list_commands
+    return {"commands": list_commands()}
+
+@app.post("/slash/run")
+def run_slash_endpoint(payload: dict):
+    from slash_commands import run_command
+    return run_command(payload.get("name", ""), payload.get("args", ""), payload.get("ctx") or {})
+
+# ---- Prompt history ----
+@app.get("/history")
+def list_history_endpoint(limit: int = 100, session_id: str | None = None):
+    from prompt_history import list_entries
+    return {"entries": list_entries(limit, session_id)}
+
+@app.get("/history/search")
+def search_history_endpoint(q: str = "", limit: int = 50):
+    from prompt_history import search as ph_search
+    return {"entries": ph_search(q, limit)}
+
+@app.post("/history")
+def add_history_endpoint(payload: dict):
+    from prompt_history import add_entry
+    eid = add_entry(
+        payload.get("content", ""),
+        session_id=payload.get("session_id"),
+        role=payload.get("role", "user"),
+        tags=payload.get("tags", ""),
+    )
+    return {"ok": eid > 0, "id": eid}
+
+# ---- Voice ----
+@app.get("/voice/voices")
+def list_voices_endpoint():
+    from voice_tools import list_installed_voices
+    return {"voices": list_installed_voices()}
+
+@app.get("/voice/available")
+def list_available_voices_endpoint():
+    from voice_tools import list_available_voices
+    return {"voices": list_available_voices()}
+
+@app.post("/voice/download")
+def download_voice_endpoint(payload: dict):
+    from voice_tools import download_voice
+    return download_voice(payload.get("name", ""))
+
+@app.post("/voice/transcribe")
+async def transcribe_endpoint(file: UploadFile = FileField(...)):
+    from voice_tools import transcribe_bytes
+    data = await file.read()
+    return transcribe_bytes(data, filename=file.filename or "audio.wav")
+
+@app.websocket("/ws/voice")
+async def voice_websocket(websocket: WebSocket):
+    """Streaming voice: client sends audio bytes; server returns transcript JSON on close/flush."""
+    from voice_tools import transcribe_bytes
+    await websocket.accept()
+    buf = bytearray()
+    try:
+        while True:
+            msg = await websocket.receive()
+            if msg.get("type") == "websocket.disconnect":
+                break
+            if "bytes" in msg and msg["bytes"]:
+                buf.extend(msg["bytes"])
+            elif "text" in msg and msg["text"]:
+                txt = msg["text"]
+                if txt == "__flush__":
+                    result = transcribe_bytes(bytes(buf), filename="stream.wav")
+                    await websocket.send_json(result)
+                    buf.clear()
+                elif txt == "__end__":
+                    break
+    except Exception as e:
+        try:
+            await websocket.send_json({"ok": False, "error": str(e)})
+        except Exception:
+            pass
+    finally:
+        if buf:
+            try:
+                result = transcribe_bytes(bytes(buf), filename="stream.wav")
+                await websocket.send_json(result)
+            except Exception:
+                pass
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 @app.get("/project/{project_name}/runs")
 def get_runs(project_name: str):
@@ -1380,5 +1720,72 @@ def agent_loop(request: AgentLoopRequest):
     except Exception as e:
         _record_run(project_name, run_id, {"id": run_id, "type": "agent_loop", "status": "error", "error": str(e), "created_at": now_iso()})
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.websocket("/ws/terminal/{project_name}")
+async def terminal_websocket(websocket: WebSocket, project_name: str):
+    """WebSocket endpoint for terminal sessions in Code Mode"""
+    from terminal_pty import handle_terminal_session
+    await handle_terminal_session(websocket, project_name)
+
+
+class CloneGitRequest(BaseModel):
+    repo_url: str
+    project_name: Optional[str] = None
+
+
+@app.post("/projects/clone-git")
+def clone_git_project(request: CloneGitRequest):
+    from config import WORKSPACES_BASE_PATH
+    raw_name = (request.project_name or request.repo_url.rstrip('/').split('/')[-1].replace('.git', '')).strip()
+    project_name = re.sub(r'[^a-z0-9_]', '', raw_name.lower().replace('-', '_').replace(' ', '_')) or 'cloned_project'
+    target_path = WORKSPACES_BASE_PATH / project_name
+    if target_path.exists():
+        raise HTTPException(status_code=400, detail=f"Project directory already exists: {project_name}")
+    try:
+        result = subprocess.run(
+            ["git", "clone", request.repo_url, str(target_path)],
+            capture_output=True, text=True, timeout=120,
+        )
+        if result.returncode != 0:
+            raise HTTPException(status_code=400, detail=f"Git clone failed: {result.stderr.strip()}")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=408, detail="Git clone timed out (120s)")
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="git is not installed or not in PATH")
+    try:
+        display_name = request.project_name or target_path.name
+        project = import_project(str(target_path), display_name=display_name, description=f"Cloned from {request.repo_url}")
+    except Exception as e:
+        shutil.rmtree(str(target_path), ignore_errors=True)
+        raise HTTPException(status_code=500, detail=f"Failed to register project: {str(e)}")
+    return {"project": project}
+
+
+@app.post("/project/{project_name}/media/transcribe-upload")
+async def transcribe_media_upload(
+    project_name: str,
+    file: UploadFile = FileField(...),
+    model_name: str = Form("base"),
+    task: str = Form("transcribe"),
+    language: Optional[str] = Form(None),
+):
+    from media_tools import _transcribe_from_path
+    from pathlib import Path as _Path
+    filename = file.filename or "upload"
+    suffix = _Path(filename).suffix or ".tmp"
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            shutil.copyfileobj(file.file, tmp)
+            tmp_path = _Path(tmp.name)
+        result = _transcribe_from_path(tmp_path, project_name, filename, model_name=model_name, task=task, language=language or None)
+    finally:
+        if tmp_path and tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
+    return result
 
 

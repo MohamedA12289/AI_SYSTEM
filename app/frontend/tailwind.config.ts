@@ -79,6 +79,11 @@ export default {
           border: "hsl(var(--sidebar-border))",
           ring: "hsl(var(--sidebar-ring))",
         },
+        "activity-bar": {
+          DEFAULT: "hsl(var(--activity-bar))",
+          foreground: "hsl(var(--activity-bar-foreground))",
+          active: "hsl(var(--activity-bar-active))",
+        },
       },
       borderRadius: {
         lg: "var(--radius)",

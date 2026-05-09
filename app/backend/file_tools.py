@@ -10,6 +10,16 @@ def get_project_root(project_name: str) -> Path:
     validate_project_name(project_name)
     if is_self_upgrade_project(project_name):
         return SELF_UPGRADE_SCOPE_PATH.resolve()
+    try:
+        from project_registry import get_registered_project
+        entry = get_registered_project(project_name)
+        workspace_root = entry.get("workspace_root")
+        if workspace_root:
+            p = Path(workspace_root).resolve()
+            p.mkdir(parents=True, exist_ok=True)
+            return p
+    except Exception:
+        pass
     project_root = (WORKSPACES_BASE_PATH / project_name).resolve()
     project_root.mkdir(parents=True, exist_ok=True)
     return project_root

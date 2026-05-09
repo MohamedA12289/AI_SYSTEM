@@ -1,4 +1,3 @@
-export type AssistantMode = "build" | "plan";
 export type ApprovalStatus = "pending" | "approved" | "rejected" | "cancelled" | "todo";
 
 export interface Project {
@@ -25,6 +24,23 @@ export interface ChatMessage {
   approvalData?: Record<string, any>;
   toolType?: string;
   toolData?: Record<string, any>;
+}
+
+export interface Thread {
+  id: string;
+  project_name: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+}
+
+export interface ThreadMessage {
+  role: MessageRole;
+  content: string;
+  timestamp: string;
+  message_type?: string;
+  metadata?: Record<string, any>;
 }
 
 export interface ChatHistoryItem {
@@ -55,6 +71,7 @@ export interface Task {
   id: string;
   title: string;
   status: string;
+  description?: string;
   created_at?: string;
 }
 
@@ -137,9 +154,6 @@ export interface AppSettings {
   };
   models: {
     active_model: string;
-  };
-  assistant: {
-    mode: AssistantMode;
   };
   ai_provider?: {
     active: "ollama" | "groq";

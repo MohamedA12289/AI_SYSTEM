@@ -1,0 +1,11 @@
+{
+  "migrations": {},
+  "global_migration_complete": true,
+  "global_migration_completed_at": "2026-04-08T01:28:34.032402+00:00",
+  "migration_results": {
+    "total": 6,
+    "migrated": 6,
+    "skipped": 0,
+    "errors": 0
+  }
+}

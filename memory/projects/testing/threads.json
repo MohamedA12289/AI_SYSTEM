@@ -1,0 +1,13 @@
+{
+  "threads": [
+    {
+      "thread_id": "testing_b2660f39-3f7b-4ada-88b3-397e101736e0",
+      "id": "testing_b2660f39-3f7b-4ada-88b3-397e101736e0",
+      "project_name": "testing",
+      "title": "Greetings",
+      "created_at": "2026-04-05T00:12:33.654666+00:00",
+      "updated_at": "2026-04-10T22:50:16.998087+00:00",
+      "message_count": 12
+    }
+  ]
+}

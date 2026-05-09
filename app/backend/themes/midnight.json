@@ -1,0 +1,15 @@
+{
+  "name": "midnight",
+  "label": "Midnight",
+  "colors": {
+    "bg": "#06070a",
+    "panel": "#0d1117",
+    "fg": "#cdd9e5",
+    "muted": "#768390",
+    "accent": "#539bf5",
+    "success": "#57ab5a",
+    "warn": "#c69026",
+    "error": "#e5534b",
+    "border": "#1b1f24"
+  }
+}

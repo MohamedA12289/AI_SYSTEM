@@ -47,3 +47,4 @@ wave2_backups/
 
 # archives
 *.zip
+app/frontend/dist-electron/

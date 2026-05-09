@@ -2,7 +2,15 @@ from __future__ import annotations
 
 import json
 import subprocess
-from config import SETTINGS_PATH, OLLAMA_MODEL, GROQ_API_KEY, GROQ_MODEL, GROQ_AVAILABLE_MODELS
+from config import (
+    SETTINGS_PATH, OLLAMA_MODEL,
+    GROQ_API_KEY, GROQ_MODEL, GROQ_AVAILABLE_MODELS,
+    OPENAI_MODEL, OPENAI_AVAILABLE_MODELS,
+    ANTHROPIC_MODEL, ANTHROPIC_AVAILABLE_MODELS,
+    OPENROUTER_MODEL, OPENROUTER_AVAILABLE_MODELS,
+)
+
+VALID_PROVIDERS = {"ollama", "groq", "openai", "anthropic", "openrouter"}
 
 DEFAULT_SETTINGS = {
     "approval_mode": {
@@ -12,12 +20,12 @@ DEFAULT_SETTINGS = {
     "models": {
         "active_model": OLLAMA_MODEL,
     },
-    "assistant": {
-        "mode": "build",
-    },
     "ai_provider": {
         "active": "ollama",
         "groq_model": GROQ_MODEL,
+        "openai_model": OPENAI_MODEL,
+        "anthropic_model": ANTHROPIC_MODEL,
+        "openrouter_model": OPENROUTER_MODEL,
         "fallback_to_ollama": True,
     },
 }
@@ -43,22 +51,20 @@ def read_settings() -> dict:
         data["approval_mode"] = _deep_copy_defaults()["approval_mode"]
     if not isinstance(data.get("models"), dict):
         data["models"] = _deep_copy_defaults()["models"]
-    if not isinstance(data.get("assistant"), dict):
-        data["assistant"] = _deep_copy_defaults()["assistant"]
     if not isinstance(data.get("ai_provider"), dict):
         data["ai_provider"] = _deep_copy_defaults()["ai_provider"]
+    data.pop("assistant", None)
     data["approval_mode"].setdefault("writes_require_approval", True)
     data["approval_mode"].setdefault("commands_require_approval", True)
     data["models"].setdefault("active_model", OLLAMA_MODEL)
-    mode = str(data["assistant"].get("mode", "build") or "build").strip().lower()
-    if mode not in {"build", "plan"}:
-        mode = "build"
-    data["assistant"]["mode"] = mode
     provider = str(data["ai_provider"].get("active", "ollama") or "ollama").strip().lower()
-    if provider not in {"ollama", "groq"}:
+    if provider not in VALID_PROVIDERS:
         provider = "ollama"
     data["ai_provider"]["active"] = provider
     data["ai_provider"].setdefault("groq_model", GROQ_MODEL)
+    data["ai_provider"].setdefault("openai_model", OPENAI_MODEL)
+    data["ai_provider"].setdefault("anthropic_model", ANTHROPIC_MODEL)
+    data["ai_provider"].setdefault("openrouter_model", OPENROUTER_MODEL)
     data["ai_provider"].setdefault("fallback_to_ollama", True)
     return data
 
@@ -72,6 +78,8 @@ def write_settings(data: dict) -> dict:
 def update_settings(patch: dict) -> dict:
     data = read_settings()
     for key, value in (patch or {}).items():
+        if key == "assistant":
+            continue
         if isinstance(value, dict) and isinstance(data.get(key), dict):
             data[key].update(value)
         else:
@@ -84,13 +92,12 @@ def get_active_model() -> str:
 
 
 def get_assistant_mode() -> str:
-    mode = str(read_settings().get("assistant", {}).get("mode", "build") or "build").strip().lower()
-    return mode if mode in {"build", "plan"} else "build"
+    return "build"
 
 
 def get_active_provider() -> str:
     provider = str(read_settings().get("ai_provider", {}).get("active", "ollama") or "ollama").strip().lower()
-    return provider if provider in {"ollama", "groq"} else "ollama"
+    return provider if provider in VALID_PROVIDERS else "ollama"
 
 
 def get_active_groq_model() -> str:
@@ -98,9 +105,34 @@ def get_active_groq_model() -> str:
     return model if model in GROQ_AVAILABLE_MODELS else GROQ_MODEL
 
 
+def get_active_openai_model() -> str:
+    model = str(read_settings().get("ai_provider", {}).get("openai_model", OPENAI_MODEL) or OPENAI_MODEL).strip()
+    return model or OPENAI_MODEL
+
+
+def get_active_anthropic_model() -> str:
+    model = str(read_settings().get("ai_provider", {}).get("anthropic_model", ANTHROPIC_MODEL) or ANTHROPIC_MODEL).strip()
+    return model or ANTHROPIC_MODEL
+
+
+def get_active_openrouter_model() -> str:
+    model = str(read_settings().get("ai_provider", {}).get("openrouter_model", OPENROUTER_MODEL) or OPENROUTER_MODEL).strip()
+    return model or OPENROUTER_MODEL
+
+
 def list_groq_models() -> dict:
     active = get_active_groq_model()
     return {"active_groq_model": active, "groq_models": GROQ_AVAILABLE_MODELS}
+
+
+def list_provider_models() -> dict:
+    return {
+        "providers": sorted(VALID_PROVIDERS),
+        "groq": {"active": get_active_groq_model(), "models": GROQ_AVAILABLE_MODELS},
+        "openai": {"active": get_active_openai_model(), "models": OPENAI_AVAILABLE_MODELS},
+        "anthropic": {"active": get_active_anthropic_model(), "models": ANTHROPIC_AVAILABLE_MODELS},
+        "openrouter": {"active": get_active_openrouter_model(), "models": OPENROUTER_AVAILABLE_MODELS},
+    }
 
 
 def list_models() -> dict:

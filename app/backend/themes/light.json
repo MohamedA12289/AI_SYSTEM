@@ -1,0 +1,15 @@
+{
+  "name": "light",
+  "label": "Light",
+  "colors": {
+    "bg": "#ffffff",
+    "panel": "#f5f6f8",
+    "fg": "#1a1a1a",
+    "muted": "#5f6368",
+    "accent": "#1d6fff",
+    "success": "#16a34a",
+    "warn": "#d97706",
+    "error": "#dc2626",
+    "border": "#e1e4e8"
+  }
+}

@@ -1,0 +1,2 @@
+{"id": "de66cb23-821a-46e0-9cff-6dedd01cb53f", "thread_id": "test_test_59f5ac9a-83e9-4a8c-94e5-8f2ef56850e8", "project_name": "test_test", "role": "user", "content": "hi", "message_type": "chat", "timestamp": "2026-04-09T01:45:23.178680+00:00", "metadata": {}}
+{"id": "cecb5dd5-d220-4a8c-b71b-c9e7213b5480", "thread_id": "test_test_59f5ac9a-83e9-4a8c-94e5-8f2ef56850e8", "project_name": "test_test", "role": "assistant", "content": "Hello! How can I assist you today?", "message_type": "chat", "timestamp": "2026-04-09T01:45:28.781609+00:00", "metadata": {}}

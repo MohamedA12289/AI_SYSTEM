@@ -1,0 +1,2 @@
+{"id": "e36aa6a4-e191-4ea1-8536-1a35877b7737", "project_name": "test_test", "action": "Project created", "detail": "test_test", "type": "project", "metadata": {}, "timestamp": "2026-04-09T01:45:12.369048+00:00"}
+{"id": "c52a3eba-97cf-4396-9210-c1cf3f6f524d", "project_name": "test_test", "action": "create_thread", "detail": "Created thread: New Conversation", "type": "activity", "metadata": {"thread_id": "test_test_59f5ac9a-83e9-4a8c-94e5-8f2ef56850e8"}, "timestamp": "2026-04-09T01:45:12.475635+00:00"}

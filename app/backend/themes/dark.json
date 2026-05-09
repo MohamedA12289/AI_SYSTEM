@@ -1,0 +1,15 @@
+{
+  "name": "dark",
+  "label": "Dark",
+  "colors": {
+    "bg": "#0b0d10",
+    "panel": "#13161a",
+    "fg": "#e6e6e6",
+    "muted": "#9aa0a6",
+    "accent": "#4f8cff",
+    "success": "#4ade80",
+    "warn": "#fbbf24",
+    "error": "#f87171",
+    "border": "#22262c"
+  }
+}

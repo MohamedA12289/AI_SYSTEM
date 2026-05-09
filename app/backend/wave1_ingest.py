@@ -12,7 +12,12 @@ import uuid
 import zipfile
 
 import pandas as pd
-import pytesseract
+try:
+    import pytesseract
+    _PYTESSERACT_AVAILABLE = True
+except ImportError:
+    pytesseract = None  # type: ignore[assignment]
+    _PYTESSERACT_AVAILABLE = False
 from PIL import Image
 from pypdf import PdfReader
 from docx import Document as DocxDocument
@@ -30,7 +35,6 @@ from ingest_store import (
     write_text_artifact,
     get_project_ingest_root,
 )
-from ollama_client import ask_ollama
 
 try:
     from tika import parser as tika_parser  # type: ignore
@@ -158,6 +162,8 @@ def _extract_pptx_text(path: Path) -> str:
 
 
 def _extract_image_text(path: Path) -> str:
+    if not _PYTESSERACT_AVAILABLE:
+        return ""
     try:
         with Image.open(path) as image:
             text = pytesseract.image_to_string(image)
@@ -405,6 +411,7 @@ File kind: {document.get('file_family')}
 Text/content:
 {content[:12000]}
 """
+        from ollama_client import ask_ollama  # lazy import to avoid circular dependency
         summary = ask_ollama(prompt)
 
     document = dict(document)

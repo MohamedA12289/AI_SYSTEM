@@ -37,7 +37,7 @@ def get_supported_file_types():
     return supported_file_families()
 
 
-@router.post("/projects/import")
+@router.post("/projects/import-existing")
 def import_existing_project_endpoint(request: ImportExistingProjectRequest):
     try:
         return import_existing_project(

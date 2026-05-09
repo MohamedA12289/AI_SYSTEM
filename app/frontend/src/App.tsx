@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
-import { BrowserRouter, Navigate, Route, Routes, useParams } from "react-router-dom";
+  import { useEffect, useMemo, useState } from "react";
+import { HashRouter, Navigate, Route, Routes, useLocation, useParams } from "react-router-dom";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { Toaster } from "@/components/ui/sonner";
 import { AppSidebar } from "@/components/AppSidebar";
 import HomePage from "@/pages/HomePage";
 import ProjectWorkspacePage from "@/pages/ProjectWorkspacePage";
@@ -8,16 +9,18 @@ import CodeModePage from "@/pages/CodeModePage";
 import SettingsPage from "@/pages/SettingsPage";
 import NewProjectPage from "@/pages/NewProjectPage";
 import SelfUpgradePage from "@/pages/SelfUpgradePage";
+import WelcomePage from "@/pages/WelcomePage";
 import NotFound from "@/pages/NotFound";
+import ChatsPage from "@/pages/ChatsPage";
 import { ProjectBrainProvider } from "@/contexts/ProjectBrainContext";
 import { api, groupTimestamp, isoToTime, projectToDisplay } from "@/services/api";
-import type { AssistantMode, ChatHistoryItem, Project } from "@/types";
+import { ThemeManager } from "@/services/ThemeManager";
+import { SettingsManager } from "@/services/SettingsManager";
+import type { ChatHistoryItem, Project } from "@/types";
 
-function ProjectChatLayout({ rightPanelOpen, onToggleRightPanel, assistantMode, onModeChange }: {
+function ProjectChatLayout({ rightPanelOpen, onToggleRightPanel }: {
   rightPanelOpen: boolean;
   onToggleRightPanel: () => void;
-  assistantMode: AssistantMode;
-  onModeChange: (mode: AssistantMode) => void;
 }) {
   const { projectId } = useParams();
   return (
@@ -25,42 +28,36 @@ function ProjectChatLayout({ rightPanelOpen, onToggleRightPanel, assistantMode, 
       <ProjectWorkspacePage
         rightPanelOpen={rightPanelOpen}
         onToggleRightPanel={onToggleRightPanel}
-        assistantMode={assistantMode}
-        onModeChange={onModeChange}
       />
     </ProjectBrainProvider>
   );
 }
 
-function ProjectCodeLayout({ assistantMode }: { assistantMode: AssistantMode }) {
+function ProjectCodeLayout() {
   const { projectId } = useParams();
   return (
     <ProjectBrainProvider projectId={projectId!}>
-      <CodeModePage assistantMode={assistantMode} />
+      <CodeModePage />
     </ProjectBrainProvider>
   );
 }
 
-function SelfUpgradeChatLayout({ rightPanelOpen, onToggleRightPanel, assistantMode, onModeChange }: {
+function SelfUpgradeChatLayout({ rightPanelOpen, onToggleRightPanel }: {
   rightPanelOpen: boolean;
   onToggleRightPanel: () => void;
-  assistantMode: AssistantMode;
-  onModeChange: (mode: AssistantMode) => void;
 }) {
   return (
     <SelfUpgradePage
       rightPanelOpen={rightPanelOpen}
       onToggleRightPanel={onToggleRightPanel}
-      assistantMode={assistantMode}
-      onModeChange={onModeChange}
     />
   );
 }
 
-function SelfUpgradeCodeLayout({ assistantMode }: { assistantMode: AssistantMode }) {
+function SelfUpgradeCodeLayout() {
   return (
     <ProjectBrainProvider projectId="self_upgrade">
-      <CodeModePage assistantMode={assistantMode} isSelfUpgrade />
+      <CodeModePage isSelfUpgrade />
     </ProjectBrainProvider>
   );
 }
@@ -68,10 +65,29 @@ function SelfUpgradeCodeLayout({ assistantMode }: { assistantMode: AssistantMode
 function AppLayout() {
   const [collapsed, setCollapsed] = useState(false);
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
-  const [assistantMode, setAssistantMode] = useState<AssistantMode>("build");
   const [projects, setProjects] = useState<Project[]>([]);
   const [history, setHistory] = useState<ChatHistoryItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [backendError, setBackendError] = useState<string | null>(null);
+  const [startupStatus, setStartupStatus] = useState("Starting CubOS…");
+  const location = useLocation();
+
+  useEffect(() => {
+    const parts = location.pathname.split("/");
+    if (location.pathname.startsWith("/project/") && parts[2]) {
+      const pid = decodeURIComponent(parts[2]);
+      const p = projects.find((x) => x.project_name === pid);
+      document.title = `${p?.display_name || pid} — CubOS`;
+    } else if (location.pathname.startsWith("/self-upgrade")) {
+      document.title = "Self-Upgrade — CubOS";
+    } else if (location.pathname === "/settings") {
+      document.title = "Settings — CubOS";
+    } else if (location.pathname === "/new-project") {
+      document.title = "New Project — CubOS";
+    } else {
+      document.title = "CubOS";
+    }
+  }, [location.pathname, projects]);
 
   const refreshProjects = async () => {
     const items = await api.projects.list();
@@ -80,8 +96,7 @@ function AppLayout() {
   };
 
   const refreshSettings = async () => {
-    const s = await api.settings.get();
-    setAssistantMode(s.assistant?.mode ?? "build");
+    await api.settings.get();
   };
 
   const refreshHistory = async (items: Project[]) => {
@@ -106,10 +121,49 @@ function AppLayout() {
   };
 
   useEffect(() => {
-    document.documentElement.classList.add("dark");
+    const savedTheme = SettingsManager.get('workbench.colorTheme');
+    if (savedTheme) {
+      ThemeManager.setTheme(savedTheme as any);
+    }
+
+    const unsubSettings = SettingsManager.onChange((s) => {
+      const ct = s['workbench.colorTheme'];
+      if (ct) ThemeManager.setTheme(ct as any);
+      const provider = s['ai.provider'];
+      if (provider) {
+        api.provider.set(provider).catch(() => null);
+      }
+    });
+
+    window.cubosDesktop?.onBackendError?.((msg: string) => {
+      setBackendError(msg || "The CubOS backend stopped unexpectedly.");
+    });
+
+    const waitForBackend = async (retries = 20, delayMs = 500): Promise<boolean> => {
+      for (let i = 0; i < retries; i++) {
+        try {
+          await api.projects.list();
+          return true;
+        } catch {
+          await new Promise((r) => setTimeout(r, delayMs));
+          if (i === 3) setStartupStatus("Waiting for backend…");
+          if (i === 10) setStartupStatus("Backend is taking longer than usual…");
+        }
+      }
+      return false;
+    };
+
     (async () => {
       setLoading(true);
       try {
+        const backendReady = await waitForBackend();
+        if (!backendReady) {
+          setBackendError(
+            "CubOS could not connect to the backend service.\n\nIf you installed CubOS normally, please try restarting the app.\nIf the problem persists, check that no other program is blocking port 8000."
+          );
+          setLoading(false);
+          return;
+        }
         const items = await refreshProjects();
         await refreshSettings();
         await refreshHistory(items);
@@ -117,17 +171,50 @@ function AppLayout() {
         setLoading(false);
       }
     })();
+
+    return () => { unsubSettings(); };
   }, []);
 
   const sidebarProjects = useMemo(() => projects.map(projectToDisplay), [projects]);
 
-  const handleModeChange = async (mode: AssistantMode) => {
-    setAssistantMode(mode);
-    try { await api.settings.setAssistantMode(mode); } catch {}
-  };
+  if (backendError) {
+    return (
+      <div className="min-h-screen bg-background text-foreground flex items-center justify-center p-8">
+        <div className="flex flex-col items-center gap-5 max-w-md text-center">
+          <div className="w-12 h-12 rounded-xl bg-destructive/10 flex items-center justify-center">
+            <span className="text-xl font-bold text-destructive">!</span>
+          </div>
+          <h1 className="text-base font-semibold text-foreground">CubOS could not start</h1>
+          <p className="text-sm text-muted-foreground whitespace-pre-line leading-relaxed">{backendError}</p>
+          <button
+            onClick={() => window.location.reload()}
+            className="px-4 py-2 rounded-lg bg-foreground text-background text-sm font-medium hover:opacity-90 transition-opacity"
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-background text-foreground flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-10 h-10 rounded-xl bg-secondary flex items-center justify-center">
+            <span className="text-lg font-bold text-foreground">C</span>
+          </div>
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"/></svg>
+            {startupStatus}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="min-h-screen bg-background text-foreground flex w-full">
+    <div className="h-screen overflow-hidden bg-background text-foreground flex w-full">
       <AppSidebar
         collapsed={collapsed}
         onToggle={() => setCollapsed((v) => !v)}
@@ -135,14 +222,17 @@ function AppLayout() {
         chatHistory={history}
       />
       <Routes>
-        <Route path="/" element={<HomePage assistantMode={assistantMode} onModeChange={handleModeChange} projects={projects} loading={loading} onRefreshProjects={refreshProjects} />} />
-        <Route path="/project/:projectId" element={<Navigate to="chat" replace />} />
-        <Route path="/project/:projectId/chat" element={<ProjectChatLayout rightPanelOpen={rightPanelOpen} onToggleRightPanel={() => setRightPanelOpen((v) => !v)} assistantMode={assistantMode} onModeChange={handleModeChange} />} />
-        <Route path="/project/:projectId/code" element={<ProjectCodeLayout assistantMode={assistantMode} />} />
+        <Route path="/" element={<HomePage projects={projects} loading={loading} onRefreshProjects={refreshProjects} />} />
+        <Route path="/chats" element={<ChatsPage />} />
+        <Route path="/welcome" element={<WelcomePage />} />
+        <Route path="/project/:projectId" element={<Navigate to="thread/latest" replace />} />
+        <Route path="/project/:projectId/chat" element={<Navigate to="../thread/latest" replace />} />
+        <Route path="/project/:projectId/thread/:threadId" element={<ProjectChatLayout rightPanelOpen={rightPanelOpen} onToggleRightPanel={() => setRightPanelOpen((v) => !v)} />} />
+        <Route path="/project/:projectId/code" element={<ProjectCodeLayout />} />
         <Route path="/self-upgrade" element={<Navigate to="chat" replace />} />
-        <Route path="/self-upgrade/chat" element={<SelfUpgradeChatLayout rightPanelOpen={rightPanelOpen} onToggleRightPanel={() => setRightPanelOpen((v) => !v)} assistantMode={assistantMode} onModeChange={handleModeChange} />} />
-        <Route path="/self-upgrade/code" element={<SelfUpgradeCodeLayout assistantMode={assistantMode} />} />
-        <Route path="/settings" element={<SettingsPage assistantMode={assistantMode} onModeChange={handleModeChange} />} />
+        <Route path="/self-upgrade/chat" element={<SelfUpgradeChatLayout rightPanelOpen={rightPanelOpen} onToggleRightPanel={() => setRightPanelOpen((v) => !v)} />} />
+        <Route path="/self-upgrade/code" element={<SelfUpgradeCodeLayout />} />
+        <Route path="/settings" element={<SettingsPage />} />
         <Route path="/new-project" element={<NewProjectPage onProjectCreated={refreshProjects} />} />
         <Route path="*" element={<NotFound />} />
       </Routes>
@@ -153,9 +243,10 @@ function AppLayout() {
 export default function App() {
   return (
     <TooltipProvider>
-      <BrowserRouter>
+      <HashRouter>
         <AppLayout />
-      </BrowserRouter>
+      </HashRouter>
+      <Toaster />
     </TooltipProvider>
   );
 }

@@ -1,1033 +1,2125 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
-import Editor, { DiffEditor } from "@monaco-editor/react";
+import { useState, useEffect, useRef } from "react";
+import { useParams, useNavigate, useLocation } from "react-router-dom";
 import {
-  X, Save, MessageSquare, Code2, ChevronRight, Loader2, Send,
-  PanelLeft, Search, GitBranch, Play, CheckCircle2, XCircle, AlertCircle,
-  FileCode, RefreshCw, Terminal, Map, Target, Zap, HelpCircle, GitCommit,
-  Trash2, ShieldCheck, Database, Filter, BookOpen, Plus,
+  MessageCircle, Loader2,
+  Files, Search, GitBranch, Bug, Puzzle, TestTube,
+  Settings2, Plus, MoreHorizontal, X, Play, Square, CheckCircle2, XCircle, AlertCircle, RefreshCw, Cpu, Zap, FlaskConical, Terminal as TerminalIcon
 } from "lucide-react";
-import { FileTree } from "@/components/FileTree";
-import { useProjectBrain } from "@/contexts/ProjectBrainContext";
-import { getSessionAiMessages, setSessionAiMessages } from "@/contexts/ProjectBrainContext";
-import type { AiMessage } from "@/contexts/ProjectBrainContext";
-import { api } from "@/services/api";
-import type { AssistantMode } from "@/types";
+import { toast } from "sonner";
+import { ModeToggle } from "@/components/ModeToggle";
+import { ModelSelector } from "@/components/ModelSelector";
+import MenuBar from "@/components/MenuBar/MenuBar";
+import FileTree from "@/components/FileTree";
+import SplitEditorView from "@/components/Editor/SplitEditorView";
+import TerminalPanel from "@/components/Terminal/TerminalPanel";
+import TerminalTabs from "@/components/Terminal/TerminalTabs";
+import SearchPanel, { SearchOptions, SearchMatch } from "@/components/Search/SearchPanel";
+import GitPanel from "@/components/Git/GitPanel";
+import ProblemsPanel, { Problem } from "@/components/Problems/ProblemsPanel";
+import OutputPanel, { OutputEntry } from "@/components/Output/OutputPanel";
+import PanelTabs, { PanelType } from "@/components/Panel/PanelTabs";
+import StatusBar from "@/components/StatusBar/StatusBar";
+import { ChatMessage as ChatMessageComponent } from "@/components/ChatMessage";
+import { ChatInput } from "@/components/ChatInput";
+import CommandPalette from "@/components/CommandPalette/CommandPalette";
+import QuickOpen from "@/components/QuickOpen/QuickOpen";
+import GoToLine from "@/components/GoToLine/GoToLine";
+import SymbolSearch from "@/components/SymbolSearch/SymbolSearch";
+import BranchSwitcher from "@/components/BranchSwitcher/BranchSwitcher";
+import ResizablePanel from "@/components/ResizablePanel/ResizablePanel";
+import { api, isoToTime } from "@/services/api";
+import { CommandRegistry } from "@/services/CommandRegistry";
+import { KeybindingRegistry } from "@/services/KeybindingRegistry";
+import { LayoutStateManager } from "@/services/LayoutStateManager";
+import { EditorGroupManager } from "@/services/EditorGroupManager";
+import { TerminalManager, Terminal } from "@/services/TerminalManager";
+import { SettingsManager } from "@/services/SettingsManager";
+import { ThemeManager } from "@/services/ThemeManager";
+import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
+import { MenuActionsProvider } from "@/contexts/MenuActionsContext";
+import { getActiveThreadId, setActiveThreadId } from "@/contexts/ProjectBrainContext";
+import type { ChatMessage as ChatMessageType } from "@/types";
 
 interface Props {
-  assistantMode: AssistantMode;
   isSelfUpgrade?: boolean;
 }
 
-type RightPanelTab = "chat" | "diffs" | "approvals" | "git" | "run" | "intel";
-
-interface PendingDiff {
-  id: string;
-  filePath: string;
-  originalContent: string;
-  proposedContent: string;
-  explanation: string;
-  language: string;
-  batchId?: string;
+interface OpenFile {
+  path: string;
+  name: string;
+  content: string;
+  isDirty: boolean;
 }
 
-interface RunOutput {
-  id: string;
-  label: string;
-  output: string;
-  status: "running" | "success" | "error";
-  errorText?: string;
+const activityBarItems = [
+  { id: "explorer", icon: Files, label: "Explorer" },
+  { id: "search", icon: Search, label: "Search" },
+  { id: "git", icon: GitBranch, label: "Source Control" },
+  { id: "debug", icon: Bug, label: "Run & Debug" },
+  { id: "extensions", icon: Puzzle, label: "Extensions" },
+  { id: "testing", icon: TestTube, label: "Testing" },
+];
+
+function cleanDisplayText(input?: string) {
+  const text = String(input ?? "");
+  return text
+    .replace(/\u001b\[[0-9;]*[A-Za-z]/g, "")
+    .replace(/\x1b\[[0-9;]*[A-Za-z]/g, "")
+    .replace(/\[[0-9]+[A-Za-z]\](?:\[K\])?/g, "")
+    .replace(/\uFEFF/g, "")
+    .replace(/\r/g, "")
+    .trim();
 }
 
-function getLanguage(path: string) {
-  const ext = path.split(".").pop()?.toLowerCase() ?? "";
-  const map: Record<string, string> = {
-    ts: "typescript", tsx: "typescript", js: "javascript", jsx: "javascript",
-    py: "python", rs: "rust", go: "go", java: "java", cs: "csharp",
-    cpp: "cpp", c: "c", h: "c", json: "json", yaml: "yaml", yml: "yaml",
-    md: "markdown", html: "html", css: "css", scss: "scss", sh: "shell",
-    toml: "toml", xml: "xml", sql: "sql", txt: "plaintext",
-  };
-  return map[ext] ?? "plaintext";
-}
-
-function cleanText(input?: string) {
-  return String(input ?? "").replace(/\u001b\[[0-9;]*[A-Za-z]/g, "").replace(/\r/g, "").trim();
-}
-
-function extractCodeBlocks(text: string): { lang: string; code: string; filePath?: string }[] {
-  const blocks: { lang: string; code: string; filePath?: string }[] = [];
-  const re = /(?:\/\/\s*File:\s*(.+?)\n)?```(\w*)\n([\s\S]*?)```/g;
-  let m;
-  while ((m = re.exec(text)) !== null) {
-    blocks.push({ filePath: m[1]?.trim(), lang: m[2] || "plaintext", code: m[3] });
+function stripUserContext(content: string): string {
+  if (content.includes('[USER MESSAGE]:')) {
+    const match = content.match(/\[USER MESSAGE\]:\s*([\s\S]*?)(?:\n\n\[AVAILABLE FILES IN PROJECT\][\s\S]*)?$/);
+    if (match) return match[1].trim();
   }
-  return blocks;
+  if (content.includes('[CONTEXT:') || content.includes('[AVAILABLE FILES IN PROJECT]')) {
+    const parts = content.split('\n\n');
+    const userParts = parts.filter(p => !p.startsWith('[CONTEXT:') && !p.startsWith('[FILE CONTENT') && !p.startsWith('[AVAILABLE FILES'));
+    if (userParts.length > 0) return userParts.join('\n\n').trim();
+  }
+  return content;
 }
 
-function StructuredJsonCard({ data, title }: { data: any; title: string }) {
-  if (!data || typeof data !== "object") return null;
-  return (
-    <div className="rounded-lg border border-border bg-muted/20 p-2 space-y-1.5 text-[10px]">
-      <p className="font-semibold text-foreground">{title}</p>
-      {Object.entries(data).map(([k, v]) => {
-        if (Array.isArray(v) && v.length === 0) return null;
-        if (v === null || v === undefined || v === "") return null;
-        return (
-          <div key={k}>
-            <span className="text-muted-foreground capitalize">{k.replace(/_/g, " ")}: </span>
-            {Array.isArray(v)
-              ? <span className="text-foreground">{(v as any[]).join(", ")}</span>
-              : <span className="text-foreground">{String(v)}</span>
-            }
-          </div>
-        );
-      })}
-    </div>
-  );
+function toChatMessages(items: any[]): ChatMessageType[] {
+  return (items ?? []).map((m) => {
+    const role = m.message_type === "approval"
+      ? "approval"
+      : m.message_type === "tool_result"
+        ? "tool"
+        : (m.role === "assistant" ? "assistant" : m.role === "system" ? "system" : "user");
+
+    const rawContent = m.content || "";
+    const displayContent = role === "user" ? stripUserContext(rawContent) : rawContent;
+
+    return {
+      id: m.id,
+      role,
+      content: cleanDisplayText(displayContent),
+      timestamp: isoToTime(m.timestamp),
+      approvalId: m.metadata?.approval_id,
+      approvalType: m.metadata?.approval_type,
+      approvalData: m.metadata?.payload,
+    } as ChatMessageType;
+  });
 }
 
-export default function CodeModePage({ assistantMode, isSelfUpgrade }: Props) {
-  const { projectId: _routeProjectId } = useParams();
-  const brain = useProjectBrain();
+export default function CodeModePage({ isSelfUpgrade }: Props) {
+  const { projectId } = useParams();
   const navigate = useNavigate();
-  const {
-    projectId, project, openTabs, activeTabPath, openFile, saveFile,
-    closeTab, updateTabContent, setActiveTabPath, selectedPaths, setSelectedPaths,
-    pendingApprovals, refresh: brainRefresh,
-  } = brain;
+  const location = useLocation();
+  const currentProjectId = isSelfUpgrade ? "self_upgrade" : projectId || "unknown";
 
-  const setOpenTabs = brain.setOpenTabs;
-
-  const [treeOpen, setTreeOpen] = useState(true);
-  const [aiPanelOpen, setAiPanelOpen] = useState(true);
-  const [rightTab, setRightTab] = useState<RightPanelTab>("chat");
-  const [treeRefreshKey, setTreeRefreshKey] = useState(0);
-
-  const [aiInput, setAiInput] = useState("");
-  const [aiMessages, setAiMessagesState] = useState<AiMessage[]>(() => getSessionAiMessages(projectId));
-  const [aiLoading, setAiLoading] = useState(false);
-  const aiEndRef = useRef<HTMLDivElement>(null);
-
-  const setAiMessages = useCallback((updater: AiMessage[] | ((prev: AiMessage[]) => AiMessage[])) => {
-    setAiMessagesState((prev) => {
-      const next = typeof updater === "function" ? updater(prev) : updater;
-      setSessionAiMessages(projectId, next);
-      return next;
-    });
-  }, [projectId]);
-
-  const [pendingDiffs, setPendingDiffs] = useState<PendingDiff[]>([]);
-  const [activeDiffId, setActiveDiffId] = useState<string | null>(null);
-
-  const [searchOpen, setSearchOpen] = useState(false);
+  const [openFiles, setOpenFiles] = useState<OpenFile[]>([]);
+  const [activeFilePath, setActiveFilePath] = useState<string | null>(null);
+  const [cursorPosition, setCursorPosition] = useState({ line: 1, column: 1 });
+  const [activeSidebar, setActiveSidebar] = useState<string>("explorer");
+  const [sidebarVisible, setSidebarVisible] = useState(true);
+  const [chatPanelOpen, setChatPanelOpen] = useState(false);
+  const [terminalPanelOpen, setTerminalPanelOpen] = useState(true);
+  const [messages, setMessages] = useState<ChatMessageType[]>([]);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [threadId, setThreadId] = useState<string | null>(null);
+  const [allThreads, setAllThreads] = useState<any[]>([]);
+  const [threadListVisible, setThreadListVisible] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  const [searchResults, setSearchResults] = useState<{ path: string; snippet?: string }[]>([]);
-  const [searchLoading, setSearchLoading] = useState(false);
-  const searchInputRef = useRef<HTMLInputElement>(null);
+  const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [gitBranch, setGitBranch] = useState<string>("main");
+  const [isSearching, setIsSearching] = useState(false);
 
-  const [gitStatus, setGitStatus] = useState<any>(null);
-  const [gitLoading, setGitLoading] = useState(false);
-  const [commitMsg, setCommitMsg] = useState("");
-  const [committing, setCommitting] = useState(false);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [quickOpenVisible, setQuickOpenVisible] = useState(false);
+  const [goToLineVisible, setGoToLineVisible] = useState(false);
+  const [symbolSearchVisible, setSymbolSearchVisible] = useState(false);
+  const [branchSwitcherVisible, setBranchSwitcherVisible] = useState(false);
+  const [allFilePaths, setAllFilePaths] = useState<string[]>([]);
 
-  const [tests, setTests] = useState<any[]>([]);
-  const [runOutputs, setRunOutputs] = useState<RunOutput[]>([]);
-  const [testsLoading, setTestsLoading] = useState(false);
-  const [cmdInput, setCmdInput] = useState("");
-  const [cmdRunning, setCmdRunning] = useState(false);
+  const [terminals, setTerminals] = useState<Terminal[]>(TerminalManager.getTerminals());
+  const [activeTerminalId, setActiveTerminalId] = useState<string | null>(TerminalManager.getActiveTerminalId());
 
-  const [intelMode, setIntelMode] = useState<"map" | "targets" | "wiring" | "contracts" | "state" | "cleanup" | "memory" | null>(null);
-  const [intelLoading, setIntelLoading] = useState(false);
-  const [intelResult, setIntelResult] = useState<any>(null);
-  const [intelInput, setIntelInput] = useState("");
-  const [deletingPath, setDeletingPath] = useState<string | null>(null);
-  const [memoryEntries, setMemoryEntries] = useState<any[]>([]);
-  const [memInput, setMemInput] = useState("");
-  const [memSaving, setMemSaving] = useState(false);
+  const [activePanel, setActivePanel] = useState<PanelType>("terminal");
+  const [searchOptions, setSearchOptions] = useState<SearchOptions>({
+    caseSensitive: false,
+    wholeWord: false,
+    useRegex: false
+  });
+  const [problems, setProblems] = useState<Problem[]>([]);
+  const [outputEntries, setOutputEntries] = useState<OutputEntry[]>([]);
+  const [zoomLevel, setZoomLevel] = useState(SettingsManager.get('workbench.zoomLevel'));
+  const [theme, setTheme] = useState(SettingsManager.get('workbench.colorTheme'));
+  const [openFolderDialogVisible, setOpenFolderDialogVisible] = useState(false);
+  const [openFolderPath, setOpenFolderPath] = useState('');
+  const [openFolderLoading, setOpenFolderLoading] = useState(false);
+  const [fileTreeRefreshKey, setFileTreeRefreshKey] = useState(0);
+  const [testCases, setTestCases] = useState<any[]>([]);
+  const [runningTestId, setRunningTestId] = useState<string | null>(null);
+  const [testResults, setTestResults] = useState<Record<string, { passed: boolean; output: string }>>({});
+  const [addTestVisible, setAddTestVisible] = useState(false);
+  const [newTestTitle, setNewTestTitle] = useState('');
+  const [newTestCommand, setNewTestCommand] = useState('');
+  const [debugRunning, setDebugRunning] = useState(false);
+  const [debugOutput, setDebugOutput] = useState<string[]>([]);
+  const cancelDebugRef = useRef<(() => void) | null>(null);
 
-  const activeTab = openTabs.find((t) => t.path === activeTabPath);
-  const activeDiff = pendingDiffs.find((d) => d.id === activeDiffId);
-  const displayName = project?.display_name || project?.project_name || projectId;
-  const isPlanMode = assistantMode === "plan";
+  const [newFileDialogVisible, setNewFileDialogVisible] = useState(false);
+  const [newFileName, setNewFileName] = useState('');
+  const [newFolderDialogVisible, setNewFolderDialogVisible] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
 
-  useEffect(() => { aiEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [aiMessages]);
-  useEffect(() => { if (rightTab === "git" && !gitStatus) loadGitStatus(); }, [rightTab]);
-  useEffect(() => { if (rightTab === "run" && tests.length === 0) loadTests(); }, [rightTab]);
-  useEffect(() => { if (!searchOpen) return; setTimeout(() => searchInputRef.current?.focus(), 50); }, [searchOpen]);
+  const [inlineEditVisible, setInlineEditVisible] = useState(false);
+  const [inlineEditQuery, setInlineEditQuery] = useState('');
+  const [inlineEditLoading, setInlineEditLoading] = useState(false);
+  const inlineEditRef = useRef<HTMLInputElement>(null);
+
+  const layoutState = LayoutStateManager.load();
+  const [sidebarWidth, setSidebarWidth] = useState(layoutState.sidebarWidth);
+  const [panelHeight, setPanelHeight] = useState(layoutState.panelHeight);
+  const [chatPanelWidth, setChatPanelWidth] = useState(layoutState.chatPanelWidth);
+
+  const editorRef = useRef<any>(null);
+
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === "p") { e.preventDefault(); setSearchOpen(true); }
-      if (e.key === "Escape") { setSearchOpen(false); }
+    const unsubscribeEditorGroup = EditorGroupManager.onChange(() => {
+      const activeGroup = EditorGroupManager.getActiveGroup();
+      if (activeGroup) {
+        const mappedFiles: OpenFile[] = activeGroup.tabs.map(tab => {
+          const existingFile = openFiles.find(f => f.path === tab.path);
+          return existingFile || {
+            path: tab.path,
+            name: tab.name,
+            content: '',
+            isDirty: tab.isDirty
+          };
+        });
+        setOpenFiles(mappedFiles);
+        setActiveFilePath(activeGroup.activeTabPath);
+      }
+    });
+
+    const unsubscribeTerminal = TerminalManager.onChange(() => {
+      setTerminals(TerminalManager.getTerminals());
+      setActiveTerminalId(TerminalManager.getActiveTerminalId());
+    });
+
+    return () => {
+      unsubscribeEditorGroup();
+      unsubscribeTerminal();
     };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
   }, []);
 
-  const refreshTree = () => setTreeRefreshKey((v) => v + 1);
+  useEffect(() => {
+    document.body.style.zoom = `${zoomLevel}`;
+    if (theme === 'light' || theme === 'dark' || theme === 'high-contrast') {
+      ThemeManager.setTheme(theme);
+    }
 
-  const loadGitStatus = async () => {
-    setGitLoading(true);
-    try { setGitStatus(await api.github.status(projectId)); }
-    catch (e: any) { setGitStatus({ error: cleanText(e?.message || "Git not available") }); }
-    finally { setGitLoading(false); }
-  };
-
-  const loadTests = async () => {
-    setTestsLoading(true);
-    try { const res = await api.tests.list(projectId); setTests(res?.tests ?? res?.items ?? []); }
-    catch { setTests([]); }
-    finally { setTestsLoading(false); }
-  };
-
-  const handleSaveActive = async () => {
-    if (!activeTab || activeTab.content === undefined) return;
-    try { await saveFile(activeTab.path, activeTab.content!); refreshTree(); } catch {}
-  };
-
-  const handleToggleSelect = useCallback((path: string) => {
-    setSelectedPaths((prev) => prev.includes(path) ? prev.filter((p) => p !== path) : [...prev, path]);
-  }, [setSelectedPaths]);
-
-  const buildFileContext = () => {
-    const parts: string[] = [];
-    if (activeTab) parts.push(`Current file: ${activeTab.path}\n\`\`\`\n${(activeTab.content ?? "").slice(0, 3000)}\n\`\`\``);
-    if (selectedPaths.length > 0) parts.push(`Selected files: ${selectedPaths.join(", ")}`);
-    if (openTabs.length > 1) parts.push(`Other open: ${openTabs.filter((t) => t.path !== activeTabPath).map((t) => t.path).join(", ")}`);
-    return parts.length ? "\n\n" + parts.join("\n\n") : "";
-  };
-
-  const handleAiSend = async () => {
-    if (!aiInput.trim() || aiLoading) return;
-    const userText = aiInput.trim();
-    setAiInput("");
-    setAiMessages((prev) => [...prev, { role: "user", text: userText }]);
-    setAiLoading(true);
-    try {
-      const modeTag = isPlanMode ? "[Plan Mode - structured analysis, no writes]" : "[Build Mode]";
-      const ctx = buildFileContext();
-      const planExtra = isPlanMode
-        ? "\n\nRespond with a structured plan: list impacted files, implementation steps, risks, test plan, recommended next action."
-        : "";
-      const prompt = `${modeTag} [Code Mode] ${userText}${ctx}${planExtra}`;
-      const res = await api.chat.send(projectId, prompt, assistantMode);
-      const text = cleanText(res?.assistant_message || res?.response || res?.tool_execution?.message || "Done.");
-
-      if (isPlanMode) {
-        setAiMessages((prev) => [...prev, { role: "ai", text }]);
-        return;
+    const unsubscribeSettings = SettingsManager.onChange((settings) => {
+      const newZoom = settings['workbench.zoomLevel'];
+      if (newZoom !== undefined && newZoom !== zoomLevel) {
+        setZoomLevel(newZoom);
+        document.body.style.zoom = `${newZoom}`;
       }
 
-      const codeBlocks = extractCodeBlocks(text);
-      if (codeBlocks.length > 0 && activeTab) {
-        const batchId = `batch-${Date.now()}`;
-        const newDiffs: PendingDiff[] = [];
-
-        for (let i = 0; i < codeBlocks.length; i++) {
-          const block = codeBlocks[i];
-          const targetPath = block.filePath || activeTab.path;
-          const targetTab = openTabs.find((t) => t.path === targetPath);
-          const originalContent = targetTab?.content ?? (block.filePath ? "" : (activeTab.content ?? ""));
-          newDiffs.push({
-            id: `${batchId}-${i}`,
-            filePath: targetPath,
-            originalContent,
-            proposedContent: block.code,
-            explanation: text.replace(/```[\s\S]*?```/g, "").trim().slice(0, 400),
-            language: block.lang || getLanguage(targetPath),
-            batchId: codeBlocks.length > 1 ? batchId : undefined,
-          });
+      const newTheme = settings['workbench.colorTheme'];
+      if (newTheme !== undefined && newTheme !== theme) {
+        setTheme(newTheme);
+        if (newTheme === 'light' || newTheme === 'dark' || newTheme === 'high-contrast') {
+          ThemeManager.setTheme(newTheme);
         }
-
-        setPendingDiffs((prev) => [...prev, ...newDiffs]);
-        setAiMessages((prev) => [...prev, { role: "ai", text, hasDiff: true, diffId: newDiffs[0].id }]);
-        setActiveDiffId(newDiffs[0].id);
-        setRightTab("diffs");
-
-        try {
-          const memKey = `pattern:${activeTab.path.split("/").pop()}`;
-          const memVal = text.replace(/```[\s\S]*?```/g, "").trim().slice(0, 300);
-          if (memVal.length > 20) {
-            await api.codeAgent.codingMemory(projectId, "write", memKey, memVal, false);
-          }
-        } catch {}
-      } else {
-        setAiMessages((prev) => [...prev, { role: "ai", text }]);
       }
+    });
+
+    return () => {
+      unsubscribeSettings();
+    };
+  }, [zoomLevel, theme]);
+
+  useEffect(() => {
+    const initThread = async () => {
+      try {
+        const res = await api.threads.list(currentProjectId);
+        const threads = res.threads || [];
+        setAllThreads(threads);
+        const savedId = getActiveThreadId(currentProjectId);
+        const savedThread = savedId ? threads.find((t: any) => t.id === savedId) : null;
+        if (savedThread) {
+          setThreadId(savedThread.id);
+          const msgs = await api.threads.messages(savedThread.id, 0, 100);
+          setMessages(toChatMessages(msgs.items));
+        } else if (threads.length > 0) {
+          const latest = threads.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())[0];
+          setThreadId(latest.id);
+          setActiveThreadId(currentProjectId, latest.id);
+          const msgs = await api.threads.messages(latest.id, 0, 100);
+          setMessages(toChatMessages(msgs.items));
+        } else {
+          const result = await api.threads.create(currentProjectId);
+          setThreadId(result.thread.id);
+          setActiveThreadId(currentProjectId, result.thread.id);
+          setAllThreads([result.thread]);
+        }
+      } catch (error) {
+        console.error('Failed to initialize thread:', error);
+      }
+    };
+    initThread();
+  }, [currentProjectId]);
+
+  useEffect(() => {
+    if (threadId) setActiveThreadId(currentProjectId, threadId);
+  }, [threadId, currentProjectId]);
+
+  useEffect(() => {
+    const fetchGitBranch = async () => {
+      try {
+        const branchInfo = await api.git.currentBranch(currentProjectId);
+        if (branchInfo?.branch) {
+          setGitBranch(branchInfo.branch);
+        }
+      } catch (error) {
+        console.log('Could not fetch git branch');
+      }
+    };
+    fetchGitBranch();
+  }, [currentProjectId]);
+
+  const refreshDiagnostics = async () => {
+    try {
+      const result = await api.diagnostics.run(currentProjectId);
+      setProblems(result.problems ?? []);
+    } catch {
+    }
+  };
+
+  const fetchTests = async () => {
+    try {
+      const res = await api.tests.list(currentProjectId);
+      setTestCases(res.tests ?? []);
+    } catch {}
+  };
+
+  const handleRunTest = async (testId: string) => {
+    setRunningTestId(testId);
+    try {
+      const res = await api.tests.run(currentProjectId, testId);
+      const passed = res.passed ?? res.exit_code === 0;
+      const output = res.output ?? res.stdout ?? "";
+      setTestResults(prev => ({ ...prev, [testId]: { passed, output } }));
+      if (passed) toast.success("Test passed");
+      else toast.error("Test failed");
     } catch (e: any) {
-      setAiMessages((prev) => [...prev, { role: "ai", text: cleanText(e?.message || "Request failed.") }]);
+      setTestResults(prev => ({ ...prev, [testId]: { passed: false, output: e?.message ?? "Run failed" } }));
+      toast.error("Test run failed");
     } finally {
-      setAiLoading(false);
+      setRunningTestId(null);
     }
   };
 
-  const handleApplyDiff = async (diff: PendingDiff) => {
-    if (isPlanMode) return;
+  const handleAddTest = async () => {
+    if (!newTestTitle.trim() || !newTestCommand.trim()) return;
+    const cmd = newTestCommand.trim().split(/\s+/);
     try {
-      if (isSelfUpgrade) {
-        try { await api.snapshots.create(projectId, `Pre-apply snapshot: ${diff.filePath}`); } catch {}
-      }
-      await saveFile(diff.filePath, diff.proposedContent);
-      setOpenTabs((prev: any) => prev.map((t: any) =>
-        t.path === diff.filePath ? { ...t, content: diff.proposedContent, isDirty: false } : t
-      ));
-      setPendingDiffs((prev) => prev.filter((d) => d.id !== diff.id));
-      if (activeDiffId === diff.id) setActiveDiffId(null);
-      setAiMessages((prev) => [...prev, { role: "ai", text: `✓ Applied to ${diff.filePath}${isSelfUpgrade ? " (snapshot saved for rollback)" : ""}` }]);
-      refreshTree();
-      setRightTab("chat");
+      await api.tests.create(currentProjectId, newTestTitle.trim(), cmd);
+      toast.success("Test added");
+      setNewTestTitle('');
+      setNewTestCommand('');
+      setAddTestVisible(false);
+      await fetchTests();
     } catch (e: any) {
-      setAiMessages((prev) => [...prev, { role: "ai", text: `✗ Apply failed: ${cleanText(e?.message)}` }]);
+      toast.error("Failed to add test: " + (e?.message ?? ""));
     }
   };
 
-  const handleApplyBatch = async (batchId: string) => {
-    if (isSelfUpgrade) {
-      try { await api.snapshots.create(projectId, `Pre-batch snapshot`); } catch {}
+  const handleDeleteTest = async (testId: string) => {
+    try {
+      await api.tests.delete(currentProjectId, testId);
+      await fetchTests();
+    } catch {}
+  };
+
+  const handleRunDebug = (command: string) => {
+    if (debugRunning && cancelDebugRef.current) {
+      cancelDebugRef.current();
+      cancelDebugRef.current = null;
+      setDebugRunning(false);
+      return;
     }
-    const batch = pendingDiffs.filter((d) => d.batchId === batchId);
-    for (const diff of batch) await handleApplyDiff(diff);
-  };
-
-  const handleRejectDiff = (diffId: string) => {
-    setPendingDiffs((prev) => prev.filter((d) => d.id !== diffId));
-    if (activeDiffId === diffId) setActiveDiffId(null);
-  };
-
-  const handleRejectBatch = (batchId: string) => {
-    setPendingDiffs((prev) => prev.filter((d) => d.batchId !== batchId));
-    setActiveDiffId(null);
-  };
-
-  const handleApproveBackend = async (approvalId: string) => {
-    try { await api.approvals.approve(projectId, approvalId); await brainRefresh(); } catch {}
-  };
-
-  const handleRejectBackend = async (approvalId: string) => {
-    try { await api.approvals.reject(projectId, approvalId); await brainRefresh(); } catch {}
-  };
-
-  const handleSearch = async () => {
-    if (!searchQuery.trim()) return;
-    setSearchLoading(true);
-    try {
-      const res = await api.projectSearch.query(projectId, searchQuery.trim());
-      setSearchResults(res.results ?? []);
-    } catch { setSearchResults([]); }
-    finally { setSearchLoading(false); }
-  };
-
-  const handleRunTest = async (test: any) => {
-    const outId = `run-${Date.now()}`;
-    setRunOutputs((prev) => [...prev, { id: outId, label: test.title, output: "Running…", status: "running" }]);
-    try {
-      const res = await api.tests.run(projectId, test.id);
-      const output = cleanText(res?.output || res?.stdout || res?.result || "Done.");
-      const success = res?.exit_code === 0 || res?.status === "passed" || res?.passed === true;
-      setRunOutputs((prev) => prev.map((r) => r.id === outId
-        ? { ...r, output, status: success ? "success" : "error", errorText: success ? undefined : output }
-        : r
-      ));
-    } catch (e: any) {
-      const errorText = cleanText(e?.message || "Failed");
-      setRunOutputs((prev) => prev.map((r) => r.id === outId ? { ...r, output: errorText, status: "error", errorText } : r));
-    }
-  };
-
-  const handleWhyFailing = async (errorText: string) => {
-    setAiLoading(true);
-    setRightTab("chat");
-    setAiMessages((prev) => [...prev, { role: "user", text: `Why is this failing?\n${errorText.slice(0, 300)}` }]);
-    try {
-      const res = await api.codeAgent.whyFailing(projectId, errorText, activeTab ? [activeTab.path] : []);
-      const diag = res?.diagnosis;
-      const text = diag
-        ? `Likely cause: ${diag.likely_cause || "unknown"}\nFiles: ${(diag.likely_files || []).join(", ") || "unknown"}\nFix: ${diag.suggested_fix || "N/A"}\nSteps: ${(diag.debug_steps || []).join(" → ")}`
-        : cleanText(res?.raw || "No diagnosis available.");
-      setAiMessages((prev) => [...prev, { role: "ai", text }]);
-    } catch (e: any) {
-      setAiMessages((prev) => [...prev, { role: "ai", text: cleanText(e?.message || "Diagnosis failed") }]);
-    } finally { setAiLoading(false); }
-  };
-
-  const handleRunCommand = () => {
-    const raw = cmdInput.trim();
-    if (!raw || cmdRunning) return;
-    const parts = raw.split(/\s+/);
-    setCmdRunning(true);
-    const outId = `cmd-${Date.now()}`;
-    setRunOutputs((prev) => [...prev, { id: outId, label: raw, output: "", status: "running" }]);
-    setCmdInput("");
-
-    api.command.stream(
-      projectId,
+    const parts = command.trim().split(/\s+/);
+    setDebugRunning(true);
+    setDebugOutput([`$ ${command}`]);
+    setTerminalPanelOpen(true);
+    setActivePanel('terminal');
+    cancelDebugRef.current = api.command.stream(
+      currentProjectId,
       parts,
-      (line) => {
-        setRunOutputs((prev) => prev.map((r) => r.id === outId ? { ...r, output: r.output + line + "\n" } : r));
-      },
+      (line) => setDebugOutput(prev => [...prev.slice(-200), line]),
       (exitCode) => {
-        const success = exitCode === 0;
-        setRunOutputs((prev) => prev.map((r) => {
-          if (r.id !== outId) return r;
-          const output = r.output || "Done.";
-          return { ...r, output, status: success ? "success" : "error", errorText: success ? undefined : output };
-        }));
-        if (!success) {
-          setRunOutputs((prev) => {
-            const r = prev.find((x) => x.id === outId);
-            if (r) {
-              setAiMessages((msgs) => [...msgs, {
-                role: "ai",
-                text: `Command "${raw}" failed (exit ${exitCode}). Use "Why failing?" to diagnose.`
-              }]);
-            }
-            return prev;
-          });
-        }
-        setCmdRunning(false);
+        setDebugRunning(false);
+        cancelDebugRef.current = null;
+        setDebugOutput(prev => [...prev, `\nExited with code ${exitCode}`]);
+        if (exitCode === 0) toast.success("Run completed");
+        else toast.error(`Process exited with code ${exitCode}`);
       },
       (err) => {
-        setRunOutputs((prev) => prev.map((r) => r.id === outId ? { ...r, output: cleanText(err), status: "error", errorText: cleanText(err) } : r));
-        setCmdRunning(false);
+        setDebugRunning(false);
+        cancelDebugRef.current = null;
+        toast.error("Run failed: " + err);
       }
     );
   };
 
-  const handleCommit = async () => {
-    if (!commitMsg.trim() || committing) return;
-    setCommitting(true);
-    try {
-      await api.github.commit(projectId, commitMsg.trim());
-      setCommitMsg("");
-      await loadGitStatus();
-      setAiMessages((prev) => [...prev, { role: "ai", text: `✓ Committed: "${commitMsg.trim()}"` }]);
-    } catch (e: any) {
-      setAiMessages((prev) => [...prev, { role: "ai", text: `✗ Commit failed: ${cleanText(e?.message)}` }]);
-    } finally { setCommitting(false); }
-  };
+  useEffect(() => {
+    refreshDiagnostics();
+    fetchTests();
+  }, [currentProjectId]);
 
-  const handleIntel = async (mode: typeof intelMode) => {
-    setIntelMode(mode);
-    setIntelLoading(true);
-    setIntelResult(null);
-    try {
-      let res: any;
-      if (mode === "map") res = await api.codeAgent.workspaceMap(projectId, intelInput);
-      else if (mode === "targets") res = await api.codeAgent.fileTargets(projectId, intelInput || "Analyze this project", activeTab ? [activeTab.path] : []);
-      else if (mode === "wiring") res = await api.codeAgent.wiringTrace(projectId, intelInput || "main feature", activeTab?.path ?? "");
-      else if (mode === "contracts") res = await api.codeAgent.apiContracts(projectId);
-      else if (mode === "state") res = await api.codeAgent.projectState(projectId, intelInput);
-      else if (mode === "cleanup") res = await api.codeAgent.cleanupScan(projectId);
-      else if (mode === "memory") {
-        const r = await api.codeAgent.codingMemory(projectId, "read");
-        setMemoryEntries(r.entries ?? []);
-        res = r;
+  useEffect(() => {
+    CommandRegistry.register({
+      id: 'workbench.action.showCommands',
+      label: 'Show All Commands',
+      category: 'View',
+      keybinding: 'ctrl+shift+p',
+      handler: () => setCommandPaletteOpen(true)
+    });
+
+    CommandRegistry.register({
+      id: 'workbench.action.quickOpen',
+      label: 'Go to File...',
+      category: 'Go',
+      keybinding: 'ctrl+p',
+      handler: () => setQuickOpenVisible(true)
+    });
+
+    CommandRegistry.register({
+      id: 'workbench.action.gotoLine',
+      label: 'Go to Line...',
+      category: 'Go',
+      keybinding: 'ctrl+g',
+      handler: () => setGoToLineVisible(true)
+    });
+
+    CommandRegistry.register({
+      id: 'workbench.action.gotoSymbol',
+      label: 'Go to Symbol in Editor...',
+      category: 'Go',
+      keybinding: 'ctrl+shift+o',
+      handler: () => setSymbolSearchVisible(true)
+    });
+
+    CommandRegistry.register({
+      id: 'workbench.action.toggleSidebarVisibility',
+      label: 'Toggle Sidebar Visibility',
+      category: 'View',
+      keybinding: 'ctrl+b',
+      handler: () => {
+        setSidebarVisible(prev => !prev);
+        LayoutStateManager.save({ sidebarVisible: !sidebarVisible });
       }
-      setIntelResult(res);
-    } catch (e: any) {
-      setIntelResult({ error: cleanText(e?.message || "Failed") });
-    } finally { setIntelLoading(false); }
+    });
+
+    CommandRegistry.register({
+      id: 'workbench.action.togglePanel',
+      label: 'Toggle Panel',
+      category: 'View',
+      keybinding: 'ctrl+j',
+      handler: () => {
+        setTerminalPanelOpen(prev => !prev);
+        LayoutStateManager.save({ panelVisible: !terminalPanelOpen });
+      }
+    });
+
+    CommandRegistry.register({
+      id: 'workbench.action.files.save',
+      label: 'Save',
+      category: 'File',
+      keybinding: 'ctrl+s',
+      when: () => activeFilePath !== null,
+      handler: () => {
+        if (activeFilePath) {
+          const file = openFiles.find(f => f.path === activeFilePath);
+          if (file) handleSave(activeFilePath, file.content);
+        }
+      }
+    });
+
+    CommandRegistry.register({
+      id: 'workbench.action.files.newFile',
+      label: 'New File',
+      category: 'File',
+      keybinding: 'ctrl+n',
+      handler: handleNewFile
+    });
+
+    CommandRegistry.register({
+      id: 'workbench.action.closeActiveEditor',
+      label: 'Close Editor',
+      category: 'View',
+      keybinding: 'ctrl+w',
+      when: () => activeFilePath !== null,
+      handler: () => {
+        if (activeFilePath) handleTabClose(activeFilePath);
+      }
+    });
+
+    CommandRegistry.register({
+      id: 'workbench.action.splitEditor',
+      label: 'Split Editor',
+      category: 'View',
+      keybinding: 'ctrl+\\',
+      handler: () => {
+        EditorGroupManager.splitEditor('horizontal');
+      }
+    });
+
+    CommandRegistry.register({
+      id: 'workbench.action.terminal.new',
+      label: 'New Terminal',
+      category: 'Terminal',
+      keybinding: 'ctrl+shift+`',
+      handler: handleNewTerminal
+    });
+
+    CommandRegistry.register({
+      id: 'workbench.action.pinEditor',
+      label: 'Pin Editor',
+      category: 'View',
+      when: () => {
+        const activeGroup = EditorGroupManager.getActiveGroup();
+        if (!activeGroup || !activeGroup.activeTabPath) return false;
+        const tab = activeGroup.tabs.find(t => t.path === activeGroup.activeTabPath);
+        return tab ? !tab.isPinned : false;
+      },
+      handler: () => {
+        if (activeFilePath) EditorGroupManager.pinTab(activeFilePath);
+      }
+    });
+
+    CommandRegistry.register({
+      id: 'workbench.action.unpinEditor',
+      label: 'Unpin Editor',
+      category: 'View',
+      when: () => {
+        const activeGroup = EditorGroupManager.getActiveGroup();
+        if (!activeGroup || !activeGroup.activeTabPath) return false;
+        const tab = activeGroup.tabs.find(t => t.path === activeGroup.activeTabPath);
+        return tab ? tab.isPinned : false;
+      },
+      handler: () => {
+        if (activeFilePath) EditorGroupManager.unpinTab(activeFilePath);
+      }
+    });
+
+    CommandRegistry.register({
+      id: 'workbench.action.zoomIn',
+      label: 'Zoom In',
+      category: 'View',
+      keybinding: 'ctrl+=',
+      handler: () => {
+        const currentZoom = SettingsManager.get('workbench.zoomLevel');
+        const newZoom = Math.min(currentZoom + 0.1, 2);
+        SettingsManager.set('workbench.zoomLevel', newZoom);
+        setZoomLevel(newZoom);
+        document.body.style.zoom = `${newZoom}`;
+      }
+    });
+
+    CommandRegistry.register({
+      id: 'workbench.action.zoomOut',
+      label: 'Zoom Out',
+      category: 'View',
+      keybinding: 'ctrl+-',
+      handler: () => {
+        const currentZoom = SettingsManager.get('workbench.zoomLevel');
+        const newZoom = Math.max(currentZoom - 0.1, 0.5);
+        SettingsManager.set('workbench.zoomLevel', newZoom);
+        setZoomLevel(newZoom);
+        document.body.style.zoom = `${newZoom}`;
+      }
+    });
+
+    CommandRegistry.register({
+      id: 'workbench.action.zoomReset',
+      label: 'Reset Zoom',
+      category: 'View',
+      keybinding: 'ctrl+0',
+      handler: () => {
+        SettingsManager.set('workbench.zoomLevel', 1);
+        setZoomLevel(1);
+        document.body.style.zoom = '1';
+      }
+    });
+
+    CommandRegistry.register({
+      id: 'editor.action.inlineEdit',
+      label: 'Inline AI Edit',
+      category: 'AI',
+      keybinding: 'ctrl+i',
+      when: () => activeFilePath !== null,
+      handler: () => {
+        if (activeFilePath) {
+          setInlineEditQuery('');
+          setInlineEditVisible(true);
+        }
+      }
+    });
+
+    KeybindingRegistry.register({ key: 'ctrl+shift+p', command: 'workbench.action.showCommands' });
+    KeybindingRegistry.register({ key: 'ctrl+p', command: 'workbench.action.quickOpen' });
+    KeybindingRegistry.register({ key: 'ctrl+g', command: 'workbench.action.gotoLine' });
+    KeybindingRegistry.register({ key: 'ctrl+shift+o', command: 'workbench.action.gotoSymbol' });
+    KeybindingRegistry.register({ key: 'ctrl+b', command: 'workbench.action.toggleSidebarVisibility' });
+    KeybindingRegistry.register({ key: 'ctrl+j', command: 'workbench.action.togglePanel' });
+    KeybindingRegistry.register({ key: 'ctrl+s', command: 'workbench.action.files.save' });
+    KeybindingRegistry.register({ key: 'ctrl+n', command: 'workbench.action.files.newFile' });
+    KeybindingRegistry.register({ key: 'ctrl+w', command: 'workbench.action.closeActiveEditor' });
+    KeybindingRegistry.register({ key: 'ctrl+\\', command: 'workbench.action.splitEditor' });
+    KeybindingRegistry.register({ key: 'ctrl+shift+`', command: 'workbench.action.terminal.new' });
+    KeybindingRegistry.register({ key: 'ctrl+=', command: 'workbench.action.zoomIn' });
+    KeybindingRegistry.register({ key: 'ctrl+-', command: 'workbench.action.zoomOut' });
+    KeybindingRegistry.register({ key: 'ctrl+0', command: 'workbench.action.zoomReset' });
+    KeybindingRegistry.register({ key: 'ctrl+i', command: 'editor.action.inlineEdit' });
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+        if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+          return;
+        }
+      }
+      KeybindingRegistry.handleKeyDown(e);
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [activeFilePath, sidebarVisible, terminalPanelOpen]);
+
+  useEffect(() => {
+    const loadAllFiles = async () => {
+      try {
+        const response = await api.files.list(currentProjectId);
+        const collectPaths = (items: any[]): string[] => {
+          const paths: string[] = [];
+          items.forEach(item => {
+            if (item.type === 'file') {
+              paths.push(item.path);
+            }
+          });
+          return paths;
+        };
+        const paths = collectPaths(response.items);
+        setAllFilePaths(paths);
+      } catch (error) {
+        console.error('Failed to load file list:', error);
+      }
+    };
+    loadAllFiles();
+  }, [currentProjectId]);
+
+  useEffect(() => {
+    LayoutStateManager.save({
+      sidebarWidth,
+      sidebarVisible,
+      panelHeight,
+      panelVisible: terminalPanelOpen,
+      activeSidebar,
+      chatPanelOpen,
+      chatPanelWidth,
+    });
+  }, [sidebarWidth, sidebarVisible, panelHeight, terminalPanelOpen, activeSidebar, chatPanelOpen, chatPanelWidth]);
+
+  const handleFileClick = async (path: string, isPreview: boolean = true) => {
+    const fileName = path.split('/').pop() || path;
+    try {
+      const response = await api.files.read(currentProjectId, path);
+      EditorGroupManager.openFile(path, fileName, undefined, { isPreview });
+
+      const existingFile = openFiles.find(f => f.path === path);
+      if (!existingFile) {
+        const newFile: OpenFile = {
+          path,
+          name: fileName,
+          content: response.content || '',
+          isDirty: false
+        };
+        setOpenFiles([...openFiles, newFile]);
+      }
+    } catch (error) {
+      console.error('Failed to load file:', error);
+      EditorGroupManager.openFile(path, fileName, undefined, { isPreview });
+      const newFile: OpenFile = {
+        path,
+        name: fileName,
+        content: `// Failed to load file: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        isDirty: false
+      };
+      setOpenFiles([...openFiles, newFile]);
+    }
   };
 
-  const handleReIndex = async () => {
-    try {
-      await api.index.trigger(projectId);
-      setAiMessages((prev) => [...prev, { role: "ai", text: "Re-indexing started in background." }]);
-    } catch {}
+  useEffect(() => {
+    const openPath = (location.state as any)?.openFilePath;
+    if (openPath && typeof openPath === 'string') {
+      handleFileClick(openPath, false);
+      navigate(location.pathname, { replace: true, state: {} });
+    }
+  }, [location.state]);
+
+  const handleTabClose = (path: string) => {
+    EditorGroupManager.closeFile(path);
+    const newOpenFiles = openFiles.filter(f => f.path !== path);
+    setOpenFiles(newOpenFiles);
   };
 
-  const handleDeleteJunk = async (path: string) => {
-    setDeletingPath(path);
+  const handleContentChange = (path: string, content: string, isDirty: boolean) => {
+    setOpenFiles(openFiles.map(f =>
+      f.path === path ? { ...f, content, isDirty } : f
+    ));
+    EditorGroupManager.setTabDirty(path, isDirty);
+  };
+
+  const handleSave = async (path: string, content: string) => {
     try {
-      await api.files.delete(projectId, path);
-      setIntelResult((prev: any) => ({
-        ...prev,
-        junk_items: (prev?.junk_items ?? []).filter((item: any) => item.path !== path),
-        count: Math.max(0, (prev?.count ?? 1) - 1),
+      let isNewFile = false;
+      try {
+        await api.files.overwrite(currentProjectId, path, content);
+      } catch {
+        await api.files.write(currentProjectId, path, content);
+        isNewFile = true;
+      }
+      setOpenFiles(openFiles.map(f =>
+        f.path === path ? { ...f, content, isDirty: false } : f
+      ));
+      EditorGroupManager.setTabDirty(path, false);
+      toast.success(`Saved ${path.split('/').pop()}`);
+      refreshDiagnostics();
+      if (isNewFile) {
+        setFileTreeRefreshKey(k => k + 1);
+      }
+    } catch (error) {
+      console.error('Failed to save file:', error);
+      toast.error(`Failed to save file: ${(error as Error).message}`);
+    }
+  };
+
+  const handleCursorPositionChange = (line: number, column: number) => {
+    setCursorPosition({ line, column });
+  };
+
+  const handleSearch = async (query: string, options?: SearchOptions) => {
+    if (!query.trim()) {
+      setSearchResults([]);
+      return;
+    }
+    setIsSearching(true);
+    try {
+      const results = await api.files.search(currentProjectId, query);
+      let processedResults: SearchMatch[] = (results.results || []).map((r: any, idx: number) => ({
+        path: r.path || '',
+        line: r.line || 0,
+        lineNumber: r.line,
+        content: r.content || r.match || '',
       }));
-      refreshTree();
-    } catch { } finally { setDeletingPath(null); }
+
+      if (options?.caseSensitive || options?.wholeWord || options?.useRegex) {
+        processedResults = processedResults.filter(result => {
+          let pattern = query;
+
+          if (options.useRegex) {
+            try {
+              const regex = new RegExp(pattern, options.caseSensitive ? '' : 'i');
+              return regex.test(result.content);
+            } catch {
+              return false;
+            }
+          }
+
+          if (options.wholeWord) {
+            pattern = `\\b${pattern}\\b`;
+          }
+
+          const regex = new RegExp(pattern, options.caseSensitive ? '' : 'i');
+          return regex.test(result.content);
+        });
+      }
+
+      setSearchResults(processedResults);
+    } catch (error) {
+      console.error('Search failed:', error);
+      setSearchResults([]);
+    } finally {
+      setIsSearching(false);
+    }
   };
 
-  const handleMemorySave = async () => {
-    if (!memInput.trim()) return;
-    setMemSaving(true);
+  const handleSearchResultClick = (path: string, line?: number) => {
+    handleFileClick(path, false);
+    if (line && editorRef.current) {
+      editorRef.current.revealLineInCenter(line);
+      editorRef.current.setPosition({ lineNumber: line, column: 1 });
+    }
+  };
+
+  const handleProblemClick = (problem: Problem) => {
+    handleFileClick(problem.file, false);
+    if (editorRef.current) {
+      editorRef.current.revealLineInCenter(problem.line);
+      editorRef.current.setPosition({ lineNumber: problem.line, column: problem.column });
+    }
+  };
+
+  const handleClearProblems = () => {
+    setProblems([]);
+  };
+
+  const handleClearOutput = () => {
+    setOutputEntries([]);
+  };
+
+  const handleNewFile = () => {
+    setNewFileName('');
+    setNewFileDialogVisible(true);
+  };
+
+  const handleCreateFile = async () => {
+    if (!newFileName.trim()) return;
     try {
-      const key = `mem_${Date.now()}`;
-      await api.codeAgent.codingMemory(projectId, "write", key, memInput.trim(), false);
-      setMemInput("");
-      const r = await api.codeAgent.codingMemory(projectId, "read");
-      setMemoryEntries(r.entries ?? []);
-    } catch { } finally { setMemSaving(false); }
+      await api.files.write(currentProjectId, newFileName.trim(), '');
+      setNewFileDialogVisible(false);
+      setNewFileName('');
+      handleFileClick(newFileName.trim());
+      setFileTreeRefreshKey(k => k + 1);
+    } catch (error) {
+      toast.error('Failed to create file: ' + (error as Error).message);
+    }
   };
 
-  const switchToChat = () => {
-    if (isSelfUpgrade) navigate("/self-upgrade/chat");
-    else navigate(`/project/${projectId}/chat`);
+  const handleNewFolder = () => {
+    setNewFolderName('');
+    setNewFolderDialogVisible(true);
   };
 
-  const batchIds = [...new Set(pendingDiffs.filter((d) => d.batchId).map((d) => d.batchId!))];
-  const singleDiffs = pendingDiffs.filter((d) => !d.batchId);
+  const handleCreateFolder = async () => {
+    if (!newFolderName.trim()) return;
+    try {
+      const placeholderPath = newFolderName.trim().replace(/\/$/, '') + '/.gitkeep';
+      await api.files.write(currentProjectId, placeholderPath, '');
+      setNewFolderDialogVisible(false);
+      setNewFolderName('');
+      setFileTreeRefreshKey(k => k + 1);
+      toast.success(`Folder created: ${newFolderName.trim()}`);
+    } catch (error) {
+      toast.error('Failed to create folder: ' + (error as Error).message);
+    }
+  };
 
-  const RIGHT_TABS: { id: RightPanelTab; label: string }[] = [
-    { id: "chat", label: "Chat" },
-    { id: "diffs", label: `Diffs${pendingDiffs.length ? ` (${pendingDiffs.length})` : ""}` },
-    { id: "approvals", label: `Approvals${pendingApprovals.length ? ` (${pendingApprovals.length})` : ""}` },
-    { id: "git", label: "Git" },
-    { id: "run", label: "Run" },
-    { id: "intel", label: "Intel" },
-  ];
+  const handleReplaceInFile = async (search: string, replace: string, filePath?: string) => {
+    if (!filePath || !search) return;
+    try {
+      const fileData = await api.files.read(currentProjectId, filePath);
+      const newContent = fileData.content.split(search).join(replace);
+      await api.files.overwrite(currentProjectId, filePath, newContent);
+      const openFile = openFiles.find(f => f.path === filePath);
+      if (openFile) {
+        setOpenFiles(prev => prev.map(f => f.path === filePath ? { ...f, content: newContent, isDirty: false } : f));
+      }
+      toast.success(`Replaced in ${filePath.split('/').pop()}`);
+    } catch (error) {
+      toast.error('Replace failed: ' + (error as Error).message);
+    }
+  };
+
+  const handleReplaceAllInFiles = async (search: string, replace: string) => {
+    if (!search || searchResults.length === 0) return;
+    const uniquePaths = [...new Set(searchResults.map(r => r.path))];
+    let replacedCount = 0;
+    for (const filePath of uniquePaths) {
+      try {
+        const fileData = await api.files.read(currentProjectId, filePath);
+        const newContent = fileData.content.split(search).join(replace);
+        if (newContent !== fileData.content) {
+          await api.files.overwrite(currentProjectId, filePath, newContent);
+          const openFile = openFiles.find(f => f.path === filePath);
+          if (openFile) {
+            setOpenFiles(prev => prev.map(f => f.path === filePath ? { ...f, content: newContent, isDirty: false } : f));
+          }
+          replacedCount++;
+        }
+      } catch {}
+    }
+    toast.success(`Replaced in ${replacedCount} file${replacedCount !== 1 ? 's' : ''}`);
+    handleSearch(search, searchOptions);
+  };
+
+  const handleInlineEdit = async () => {
+    if (!inlineEditQuery.trim() || !threadId) return;
+    const editor = editorRef.current;
+    if (!editor) return;
+    const selection = editor.getSelection();
+    const selectedText = selection ? editor.getModel()?.getValueInRange(selection) : '';
+    const activeFile = openFiles.find(f => f.path === activeFilePath);
+
+    setInlineEditLoading(true);
+    const prompt = selectedText
+      ? `[INLINE EDIT REQUEST]\nFile: ${activeFilePath}\nSelected code:\n\`\`\`\n${selectedText}\n\`\`\`\n\nInstruction: ${inlineEditQuery}\n\nReplace the selected code with the improved version. Respond with ONLY the replacement code, no explanation.`
+      : `[INLINE EDIT REQUEST]\nFile: ${activeFilePath}\nFull content:\n\`\`\`\n${activeFile?.content?.substring(0, 3000) || ''}\n\`\`\`\n\nInstruction: ${inlineEditQuery}\n\nRespond with the complete updated file content only.`;
+
+    let result = '';
+    api.threads.stream(
+      threadId,
+      prompt,
+      (token) => { result += token; },
+      async () => {
+        setInlineEditLoading(false);
+        setInlineEditVisible(false);
+        setInlineEditQuery('');
+        const code = result.replace(/^```[^\n]*\n?/, '').replace(/\n?```$/, '').trim();
+        if (selectedText && selection) {
+          editor.executeEdits('inline-ai', [{
+            range: selection,
+            text: code,
+          }]);
+          toast.success('AI edit applied');
+        } else if (activeFilePath) {
+          await handleSave(activeFilePath, code);
+          const f = openFiles.find(f => f.path === activeFilePath);
+          if (f) setOpenFiles(prev => prev.map(o => o.path === activeFilePath ? { ...o, content: code, isDirty: false } : o));
+          toast.success('AI edit applied to file');
+        }
+      },
+      (err) => {
+        setInlineEditLoading(false);
+        toast.error('Inline edit failed: ' + err);
+      }
+    );
+  };
+
+  const handleNewTerminal = () => {
+    TerminalManager.createTerminal(`Terminal ${terminals.length + 1}`);
+  };
+
+  const handleTerminalTabClick = (terminalId: string) => {
+    const terminals = TerminalManager.getTerminals();
+    const terminal = terminals.find(t => t.id === terminalId);
+    if (terminal) {
+      TerminalManager.setActiveTerminal(terminalId);
+    }
+  };
+
+  const handleTerminalTabClose = (terminalId: string) => {
+    TerminalManager.closeTerminal(terminalId);
+  };
+
+  const handleOpenFolder = async () => {
+    if ((window as any).cubosDesktop?.showOpenDialog) {
+      try {
+        const result = await (window as any).cubosDesktop.showOpenDialog({
+          properties: ['openDirectory'],
+        });
+        if (!result.canceled && result.filePaths.length > 0) {
+          await importFolderPath(result.filePaths[0]);
+        }
+      } catch (error) {
+        console.error('Failed to open folder:', error);
+      }
+    } else {
+      setOpenFolderPath('');
+      setOpenFolderDialogVisible(true);
+    }
+  };
+
+  const importFolderPath = async (folderPath: string) => {
+    if (!folderPath.trim()) return;
+    setOpenFolderLoading(true);
+    try {
+      const BASE = (import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
+      const response = await fetch(`${BASE}/projects/import`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: folderPath.trim() }),
+      });
+      if (response.ok) {
+        const data = await response.json();
+        const projectName = data.project?.project_name || data.project_name;
+        if (projectName) {
+          setOpenFolderDialogVisible(false);
+          navigate(`/project/${projectName}/code`);
+        } else {
+          toast.error('Failed to open folder: invalid response');
+        }
+      } else if (response.status === 409) {
+        const folderName = folderPath.trim().replace(/\\/g, '/').split('/').pop() || '';
+        const projectName = folderName.toLowerCase().replace(/[\s_]+/g, '-');
+        if (projectName) {
+          setOpenFolderDialogVisible(false);
+          navigate(`/project/${projectName}/code`);
+        } else {
+          toast.error('Project already exists');
+        }
+      } else {
+        const errText = await response.text();
+        let detail = errText;
+        try { detail = JSON.parse(errText)?.detail || errText; } catch {}
+        toast.error(`Failed to open folder: ${detail}`);
+      }
+    } catch (error: any) {
+      toast.error(`Failed to open folder: ${error.message}`);
+    } finally {
+      setOpenFolderLoading(false);
+    }
+  };
+
+  const handleSaveAll = async () => {
+    for (const file of openFiles.filter(f => f.isDirty)) {
+      try {
+        await api.files.write(currentProjectId, file.path, file.content);
+        setOpenFiles(prev => prev.map(f =>
+          f.path === file.path ? { ...f, isDirty: false } : f
+        ));
+      } catch (error) {
+        console.error(`Failed to save ${file.path}:`, error);
+      }
+    }
+  };
+
+  const handleSend = async (content: string, attachments?: File[]) => {
+    if (!threadId) return;
+
+    const activeFile = openFiles.find(f => f.path === activeFilePath);
+
+    let enhancedMessage = content;
+
+    if (attachments && attachments.length > 0) {
+      const electronPaths: string[] = (window as any)._cubosElectronFilePaths || [];
+      const attachmentContext = attachments.map((f, i) => {
+        const fullPath = electronPaths[i] || f.name;
+        return `[ATTACHED FILE: ${fullPath}]`;
+      }).join('\n');
+      enhancedMessage = `${attachmentContext}\n\n${enhancedMessage}`;
+      (window as any)._cubosElectronFilePaths = [];
+    }
+
+    if (activeFile) {
+      enhancedMessage = `[CONTEXT: Currently editing file "${activeFile.path}" at line ${cursorPosition.line}, column ${cursorPosition.column}]\n\n[FILE CONTENT OF ${activeFile.path}]:\n\`\`\`\n${activeFile.content.substring(0, 5000)}\n\`\`\`\n\n[USER MESSAGE]: ${enhancedMessage}`;
+    } else if (activeFilePath) {
+      enhancedMessage = `[CONTEXT: Active file is "${activeFilePath}"]\n\n[USER MESSAGE]: ${enhancedMessage}`;
+    }
+
+    if (allFilePaths.length > 0 && allFilePaths.length <= 50) {
+      enhancedMessage += `\n\n[AVAILABLE FILES IN PROJECT]: ${allFilePaths.slice(0, 50).join(', ')}`;
+    }
+
+    const now = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    setMessages((prev) => [...prev, { id: `u-${Date.now()}`, role: "user", content, timestamp: now }]);
+
+    const streamId = `a-${Date.now()}`;
+    setMessages((prev) => [...prev, { id: streamId, role: "assistant", content: "▋", timestamp: now }]);
+    setIsStreaming(true);
+
+    let streamedContent = "";
+
+    api.threads.stream(
+      threadId,
+      enhancedMessage,
+      (token) => {
+        streamedContent += token;
+        setMessages((prev) => prev.map((m) =>
+          m.id === streamId ? { ...m, content: (m.content === "▋" ? "" : m.content) + token } : m
+        ));
+      },
+      async () => {
+        setIsStreaming(false);
+        setMessages((prev) => prev.map((m) =>
+          m.id === streamId && m.content === "▋" ? { ...m, content: "Done." } : m
+        ));
+
+        const writePattern = /<!--\s*WRITE_FILE:\s*([^\n>]+?)\s*-->\s*```[^\n]*\n([\s\S]*?)```/g;
+        let match;
+        const written: string[] = [];
+        while ((match = writePattern.exec(streamedContent)) !== null) {
+          const filePath = match[1].trim();
+          const fileContent = match[2];
+          try {
+            await api.files.overwrite(currentProjectId, filePath, fileContent);
+            written.push(filePath);
+          } catch {
+            try {
+              await api.files.write(currentProjectId, filePath, fileContent);
+              written.push(filePath);
+            } catch (writeErr) {
+              toast.error(`Could not write ${filePath}`);
+            }
+          }
+        }
+        if (written.length > 0) {
+          toast.success(`Written: ${written.join(", ")}`);
+          setOutputEntries(prev => [
+            ...prev,
+            ...written.map(p => ({
+              id: `write-${Date.now()}-${p}`,
+              timestamp: new Date().toLocaleTimeString(),
+              source: "AI",
+              content: `File written: ${p}`,
+              type: "info" as const,
+            }))
+          ]);
+          const refreshed = await api.files.list(currentProjectId);
+          setAllFilePaths((refreshed?.items ?? []).map((f: any) => f.path || f.name));
+          setFileTreeRefreshKey(k => k + 1);
+        }
+      },
+      (err) => {
+        setIsStreaming(false);
+        setMessages((prev) => prev.map((m) =>
+          m.id === streamId ? { ...m, content: cleanDisplayText(err) || "Request failed." } : m
+        ));
+      },
+      {
+        enableTools: true,
+        onTool: (tool) => {
+          setOutputEntries(prev => [
+            ...prev,
+            {
+              id: `tool-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+              timestamp: new Date().toLocaleTimeString(),
+              source: "AI Tool",
+              content: `${tool.name} ${JSON.stringify(tool.args).slice(0, 200)}\n→ ${tool.result_preview.slice(0, 400)}`,
+              type: "info" as const,
+            },
+          ]);
+          if (tool.name === "write_file" || tool.name === "overwrite_file") {
+            api.files.list(currentProjectId).then((refreshed) => {
+              setAllFilePaths((refreshed?.items ?? []).map((f: any) => f.path || f.name));
+              setFileTreeRefreshKey(k => k + 1);
+            }).catch(() => null);
+          }
+        },
+      }
+    );
+  };
+
+  useKeyboardShortcuts({
+    onSave: () => {
+      if (activeFilePath) {
+        const file = openFiles.find(f => f.path === activeFilePath);
+        if (file) handleSave(activeFilePath, file.content);
+      }
+    },
+    onCloseFile: () => {
+      if (activeFilePath) handleTabClose(activeFilePath);
+    },
+    onToggleTerminal: () => setTerminalPanelOpen(prev => !prev),
+    onToggleSidebar: () => setSidebarVisible(prev => !prev),
+    onShowExplorer: () => {
+      setActiveSidebar('explorer');
+      setSidebarVisible(true);
+    },
+    onSearchInFiles: () => {
+      setActiveSidebar('search');
+      setSidebarVisible(true);
+    },
+    onNewFile: handleNewFile,
+    onInlineEdit: () => {
+      if (activeFilePath) {
+        setInlineEditQuery('');
+        setInlineEditVisible(true);
+      }
+    },
+  });
+
+  const menuActions = {
+    // File Menu
+    onNewFile: handleNewFile,
+    onOpenFile: async () => {
+      if ((window as any).cubosDesktop?.showOpenDialog) {
+        const result = await (window as any).cubosDesktop.showOpenDialog({
+          properties: ['openFile'],
+        });
+        if (!result.canceled && result.filePaths.length > 0) {
+          handleFileClick(result.filePaths[0]);
+        }
+      } else {
+        toast.error('Open File requires the desktop app. In browser mode, use the file tree on the left.');
+      }
+    },
+    onOpenFolder: handleOpenFolder,
+    onSave: () => {
+      if (activeFilePath) {
+        const file = openFiles.find(f => f.path === activeFilePath);
+        if (file) handleSave(activeFilePath, file.content);
+      }
+    },
+    onSaveAs: async () => {
+      if (!activeFilePath) return;
+      const file = openFiles.find(f => f.path === activeFilePath);
+      if (!file) return;
+      if ((window as any).cubosDesktop?.showSaveDialog) {
+        const result = await (window as any).cubosDesktop.showSaveDialog({});
+        if (!result.canceled && result.filePath) {
+          await api.files.write(currentProjectId, result.filePath, file.content);
+        }
+      } else {
+        toast.error('Save As requires the desktop app. Use Ctrl+S to save the current file.');
+      }
+    },
+    onSaveAll: handleSaveAll,
+    onCloseEditor: () => {
+      if (activeFilePath) handleTabClose(activeFilePath);
+    },
+    onNewWindow: () => {
+      if ((window as any).cubosDesktop?.openNewWindow) {
+        (window as any).cubosDesktop.openNewWindow();
+      } else {
+        window.open(window.location.href, '_blank');
+      }
+    },
+    onCloseFolder: () => {
+      navigate('/');
+    },
+    onPreferences: () => {
+      navigate('/settings');
+    },
+
+    // Edit Menu
+    onUndo: () => {
+      editorRef.current?.trigger('keyboard', 'undo', {});
+    },
+    onRedo: () => {
+      editorRef.current?.trigger('keyboard', 'redo', {});
+    },
+    onCut: () => {
+      editorRef.current?.trigger('keyboard', 'editor.action.clipboardCutAction', {});
+    },
+    onCopy: () => {
+      editorRef.current?.trigger('keyboard', 'editor.action.clipboardCopyAction', {});
+    },
+    onPaste: () => {
+      editorRef.current?.trigger('keyboard', 'editor.action.clipboardPasteAction', {});
+    },
+    onFind: () => {
+      editorRef.current?.trigger('keyboard', 'actions.find', {});
+    },
+    onReplace: () => {
+      editorRef.current?.trigger('keyboard', 'editor.action.startFindReplaceAction', {});
+    },
+    onFindInFiles: () => {
+      setActiveSidebar('search');
+      setSidebarVisible(true);
+    },
+    onReplaceInFiles: () => {
+      setActiveSidebar('search');
+      setSidebarVisible(true);
+    },
+
+    // Selection Menu
+    onSelectAll: () => {
+      editorRef.current?.trigger('keyboard', 'editor.action.selectAll', {});
+    },
+    onExpandSelection: () => {
+      editorRef.current?.trigger('keyboard', 'editor.action.smartSelect.expand', {});
+    },
+    onShrinkSelection: () => {
+      editorRef.current?.trigger('keyboard', 'editor.action.smartSelect.shrink', {});
+    },
+    onCopyLineUp: () => {
+      editorRef.current?.trigger('keyboard', 'editor.action.copyLinesUpAction', {});
+    },
+    onCopyLineDown: () => {
+      editorRef.current?.trigger('keyboard', 'editor.action.copyLinesDownAction', {});
+    },
+    onMoveLineUp: () => {
+      editorRef.current?.trigger('keyboard', 'editor.action.moveLinesUpAction', {});
+    },
+    onMoveLineDown: () => {
+      editorRef.current?.trigger('keyboard', 'editor.action.moveLinesDownAction', {});
+    },
+    onAddCursorAbove: () => {
+      editorRef.current?.trigger('keyboard', 'editor.action.insertCursorAbove', {});
+    },
+    onAddCursorBelow: () => {
+      editorRef.current?.trigger('keyboard', 'editor.action.insertCursorBelow', {});
+    },
+    onSelectAllOccurrences: () => {
+      editorRef.current?.trigger('keyboard', 'editor.action.selectHighlights', {});
+    },
+
+    // View Menu
+    onCommandPalette: () => setCommandPaletteOpen(true),
+    onOpenView: () => setCommandPaletteOpen(true),
+    onShowProblems: () => {
+      setActivePanel('problems');
+      setTerminalPanelOpen(true);
+    },
+    onShowOutput: () => {
+      setActivePanel('output');
+      setTerminalPanelOpen(true);
+    },
+    onToggleWordWrap: () => {
+      const currentWrap = SettingsManager.get('editor.wordWrap');
+      const newWrap = currentWrap === 'on' ? 'off' : 'on';
+      SettingsManager.set('editor.wordWrap', newWrap);
+      editorRef.current?.updateOptions({ wordWrap: newWrap });
+    },
+    onZoomIn: () => {
+      const currentZoom = SettingsManager.get('workbench.zoomLevel') || 1;
+      const newZoom = Math.min(currentZoom + 0.1, 2);
+      SettingsManager.set('workbench.zoomLevel', newZoom);
+      setZoomLevel(newZoom);
+      document.body.style.zoom = `${newZoom}`;
+    },
+    onZoomOut: () => {
+      const currentZoom = SettingsManager.get('workbench.zoomLevel') || 1;
+      const newZoom = Math.max(currentZoom - 0.1, 0.5);
+      SettingsManager.set('workbench.zoomLevel', newZoom);
+      setZoomLevel(newZoom);
+      document.body.style.zoom = `${newZoom}`;
+    },
+
+    // Go Menu
+    onGoBack: () => {
+      window.history.back();
+    },
+    onGoForward: () => {
+      window.history.forward();
+    },
+    onGoToFile: () => setQuickOpenVisible(true),
+    onGoToSymbol: () => setSymbolSearchVisible(true),
+    onGoToLine: () => setGoToLineVisible(true),
+    onGoToDefinition: () => {
+      editorRef.current?.trigger('keyboard', 'editor.action.revealDefinition', {});
+    },
+    onGoToReferences: () => {
+      editorRef.current?.trigger('keyboard', 'editor.action.goToReferences', {});
+    },
+    onGoToImplementation: () => {
+      editorRef.current?.trigger('keyboard', 'editor.action.goToImplementation', {});
+    },
+
+    // Debug Menu
+    onStartDebugging: () => {
+      toast.info('Opening debug panel. Use console.log() and browser DevTools (F12) for debugging.');
+      setActiveSidebar('debug');
+      setSidebarVisible(true);
+    },
+    onRunWithoutDebugging: () => {
+      if (!activeFilePath) {
+        toast.error('No file is currently active.');
+        return;
+      }
+      const ext = activeFilePath.split('.').pop()?.toLowerCase();
+      const fileName = activeFilePath.split('/').pop();
+      let command = '';
+
+      if (ext === 'py') command = `python "${fileName}"`;
+      else if (ext === 'js') command = `node "${fileName}"`;
+      else if (ext === 'ts') command = `ts-node "${fileName}"`;
+      else if (ext === 'sh' || ext === 'bash') command = `bash "${fileName}"`;
+      else if (ext === 'ps1') command = `powershell -File "${fileName}"`;
+      else {
+        toast.error(`Unable to determine how to run .${ext} files. Please use the Terminal to run this file manually.`);
+        return;
+      }
+
+      setTerminalPanelOpen(true);
+      setActivePanel('terminal');
+
+      navigator.clipboard.writeText(command).then(() => {
+        toast.success(`Command copied to clipboard: ${command}\nPaste it in the terminal to run.`);
+      }).catch(() => {
+        toast.info(`Run this command in the terminal: ${command}`);
+      });
+    },
+    onStopDebugging: () => {
+      toast.info('Stop debugging: Close debug panel or use Ctrl+C in terminal');
+      setActiveSidebar('explorer');
+    },
+    onRestartDebugging: () => {
+      toast.info('Restart debugging: Re-run your application from the terminal');
+    },
+    onAddConfiguration: () => {
+      toast.info('Create .vscode/launch.json to configure debug settings');
+      handleNewFile();
+    },
+    onOpenConfigurations: () => {
+      const launchJsonPath = '.vscode/launch.json';
+      handleFileClick(launchJsonPath);
+    },
+    onToggleBreakpoint: () => {
+      editorRef.current?.trigger('keyboard', 'editor.debug.action.toggleBreakpoint', {});
+    },
+    onNewBreakpoint: () => {
+      toast.info('Use F9 to toggle breakpoints in the editor');
+    },
+
+    // Terminal Menu
+    onNewTerminal: handleNewTerminal,
+    onSplitTerminal: () => {
+      const newTerminalName = `Terminal ${terminals.length + 1}`;
+      TerminalManager.createTerminal(newTerminalName);
+      setTerminalPanelOpen(true);
+      setActivePanel('terminal');
+    },
+    onRunTask: () => {
+      setTerminalPanelOpen(true);
+      setActivePanel('terminal');
+      toast.info('Enter your task command in the terminal (e.g., npm run test, npm start)');
+    },
+    onRunBuildTask: () => {
+      setTerminalPanelOpen(true);
+      setActivePanel('terminal');
+      const command = 'npm run build';
+      navigator.clipboard.writeText(command).then(() => {
+        toast.success(`Build command copied: ${command}\nPaste in terminal to run.`);
+      }).catch(() => {
+        toast.info(`Run this in terminal: ${command}`);
+      });
+    },
+    onRunActiveFile: () => {
+      if (!activeFilePath) {
+        toast.error('No file is currently active.');
+        return;
+      }
+      const ext = activeFilePath.split('.').pop()?.toLowerCase();
+      const fileName = activeFilePath.split('/').pop();
+      let command = '';
+
+      if (ext === 'py') command = `python "${fileName}"`;
+      else if (ext === 'js') command = `node "${fileName}"`;
+      else if (ext === 'ts') command = `ts-node "${fileName}"`;
+      else if (ext === 'sh' || ext === 'bash') command = `bash "${fileName}"`;
+      else if (ext === 'ps1') command = `powershell -File "${fileName}"`;
+      else {
+        toast.error(`Unable to determine how to run .${ext} files. Please use the Terminal to run this file manually.`);
+        return;
+      }
+
+      setTerminalPanelOpen(true);
+      setActivePanel('terminal');
+
+      navigator.clipboard.writeText(command).then(() => {
+        toast.success(`Command copied to clipboard: ${command}\nPaste it in the terminal to run.`);
+      }).catch(() => {
+        toast.info(`Run this command in the terminal: ${command}`);
+      });
+    },
+    onConfigureTasks: () => {
+      const tasksJsonPath = '.vscode/tasks.json';
+      handleFileClick(tasksJsonPath);
+      toast.info('Create or edit tasks.json to configure tasks');
+    },
+    onConfigureDefaultBuildTask: () => {
+      const tasksJsonPath = '.vscode/tasks.json';
+      handleFileClick(tasksJsonPath);
+      toast.info('Configure default build task in tasks.json');
+    },
+
+    // Help Menu
+    onWelcome: () => {
+      window.open('https://github.com/cubeos/cubos', '_blank');
+    },
+    onDocumentation: () => {
+      window.open('https://github.com/cubeos/cubos/wiki', '_blank');
+    },
+    onReleaseNotes: () => {
+      window.open('https://github.com/cubeos/cubos/releases', '_blank');
+    },
+    onKeyboardShortcuts: () => {
+      setCommandPaletteOpen(true);
+    },
+    onReportIssue: () => {
+      window.open('https://github.com/cubeos/cubos/issues/new', '_blank');
+    },
+    onAbout: () => {
+      toast.info('CubOS - AI-Powered Development Environment\n\nVersion: 1.0.0\nBuilt with ❤️ using React, TypeScript, and FastAPI');
+    },
+
+    // Navigation
+    onToggleTerminal: () => setTerminalPanelOpen(prev => !prev),
+    onToggleSidebar: () => setSidebarVisible(prev => !prev),
+    onShowExplorer: () => {
+      setActiveSidebar('explorer');
+      setSidebarVisible(true);
+    },
+    onShowSearch: () => {
+      setActiveSidebar('search');
+      setSidebarVisible(true);
+    },
+    onShowSourceControl: () => {
+      setActiveSidebar('git');
+      setSidebarVisible(true);
+    },
+    onShowDebug: () => {
+      setActiveSidebar('debug');
+      setSidebarVisible(true);
+    },
+    onShowExtensions: () => {
+      setActiveSidebar('extensions');
+      setSidebarVisible(true);
+    },
+  };
 
   return (
-    <div className="flex-1 flex flex-col h-screen overflow-hidden">
-      {searchOpen && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-start justify-center pt-20">
-          <div className="bg-background border border-border rounded-xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden">
-            <div className="flex items-center gap-2 px-4 py-3 border-b border-border">
-              <Search className="w-4 h-4 text-muted-foreground shrink-0" />
+    <MenuActionsProvider actions={menuActions}>
+      <div className="flex flex-col h-screen bg-background">
+        {/* Menu Bar */}
+        <MenuBar />
+
+        {/* Open Folder Dialog */}
+        {openFolderDialogVisible && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+            <div className="bg-background border border-border rounded-lg p-6 w-[480px] shadow-xl">
+              <h2 className="text-foreground font-semibold text-sm mb-1">Open Folder</h2>
+              <p className="text-muted-foreground text-xs mb-4">Enter the full path to the folder you want to open</p>
               <input
-                ref={searchInputRef}
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") handleSearch(); if (e.key === "Escape") setSearchOpen(false); }}
-                placeholder="Search files and content… (Enter)"
-                className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
+                type="text"
+                value={openFolderPath}
+                onChange={e => setOpenFolderPath(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') importFolderPath(openFolderPath); }}
+                placeholder="e.g. C:\Users\you\projects\myapp"
+                className="w-full bg-muted border border-border rounded px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-foreground/40 mb-4"
+                autoFocus
               />
-              {searchLoading && <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />}
-              <button onClick={() => setSearchOpen(false)} className="text-muted-foreground hover:text-foreground"><X className="w-4 h-4" /></button>
+              <div className="flex gap-2 justify-end">
+                <button
+                  onClick={() => setOpenFolderDialogVisible(false)}
+                  className="px-4 py-2 text-xs rounded border border-border text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => importFolderPath(openFolderPath)}
+                  disabled={openFolderLoading || !openFolderPath.trim()}
+                  className="px-4 py-2 text-xs rounded bg-foreground text-background hover:bg-foreground/80 transition-colors disabled:opacity-50"
+                >
+                  {openFolderLoading ? 'Opening...' : 'Open Folder'}
+                </button>
+              </div>
             </div>
-            <div className="max-h-72 overflow-y-auto scrollbar-thin">
-              {searchResults.length === 0 && !searchLoading && searchQuery && (
-                <p className="text-[12px] text-muted-foreground px-4 py-3">No results.</p>
-              )}
-              {searchResults.map((r, i) => (
-                <div key={i} onClick={() => { openFile(r.path, r.path.split("/").pop()!); setSearchOpen(false); }}
-                  className="flex flex-col px-4 py-2.5 cursor-pointer hover:bg-secondary border-b border-border/50 last:border-0">
-                  <span className="text-[12px] text-foreground font-mono">{r.path}</span>
-                  {r.snippet && <span className="text-[11px] text-muted-foreground truncate mt-0.5">{r.snippet}</span>}
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      <header className="flex items-center justify-between px-3 py-2 border-b border-border bg-background shrink-0 gap-2">
-        <div className="flex items-center gap-2 min-w-0">
-          <button onClick={() => setTreeOpen((v) => !v)} className="p-1 rounded hover:bg-secondary text-muted-foreground"><PanelLeft className="w-4 h-4" /></button>
-          <Code2 className="w-4 h-4 text-muted-foreground shrink-0" />
-          <span className="text-sm font-semibold text-foreground truncate">{displayName}</span>
-          <span className="text-[10px] text-muted-foreground">— Code Mode</span>
-          <span className={`text-[9px] px-1.5 py-0.5 rounded font-semibold ${isPlanMode ? "bg-amber-500/20 text-amber-400" : "bg-green-500/20 text-green-400"}`}>
-            {isPlanMode ? "PLAN" : "BUILD"}
-          </span>
-          {selectedPaths.length > 0 && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary">{selectedPaths.length} selected</span>
-          )}
-        </div>
-        <div className="flex items-center gap-1 shrink-0">
-          <button onClick={refreshTree} className="p-1 rounded hover:bg-secondary text-muted-foreground" title="Refresh file tree"><RefreshCw className="w-3.5 h-3.5" /></button>
-          <button onClick={() => setSearchOpen(true)} className="p-1 rounded hover:bg-secondary text-muted-foreground" title="Search (Ctrl+P)"><Search className="w-3.5 h-3.5" /></button>
-          {activeTab?.isDirty && (
-            <button onClick={handleSaveActive} className="flex items-center gap-1 px-2 py-1 text-[11px] rounded-md bg-primary/10 text-primary hover:bg-primary/20">
-              <Save className="w-3 h-3" /> Save
-            </button>
-          )}
-          <div className="flex items-center rounded-lg border border-border overflow-hidden text-[11px]">
-            <button onClick={switchToChat} className="flex items-center gap-1 px-2.5 py-1 text-muted-foreground hover:bg-secondary">
-              <MessageSquare className="w-3 h-3" /> Chat
-            </button>
-            <button className="flex items-center gap-1 px-2.5 py-1 bg-secondary text-foreground font-medium">
-              <Code2 className="w-3 h-3" /> Code
-            </button>
-          </div>
-        </div>
-      </header>
-
-      <div className="flex flex-1 overflow-hidden">
-        {treeOpen && (
-          <div className="w-52 border-r border-border bg-background flex flex-col shrink-0 overflow-hidden">
-            <div className="flex items-center justify-between px-3 py-2 border-b border-border">
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Explorer</span>
-              {selectedPaths.length > 0 && (
-                <button onClick={() => setSelectedPaths([])} className="text-[9px] text-muted-foreground hover:text-foreground px-1 py-0.5 rounded hover:bg-secondary">Clear</button>
-              )}
-            </div>
-            <FileTree key={treeRefreshKey} projectId={projectId} onOpenFile={openFile} activeTabPath={activeTabPath} selectedPaths={selectedPaths} onToggleSelect={handleToggleSelect} />
           </div>
         )}
 
-        <div className="flex-1 flex flex-col overflow-hidden">
-          {openTabs.length > 0 && (
-            <div className="flex items-center border-b border-border bg-background overflow-x-auto scrollbar-thin shrink-0">
-              {openTabs.map((tab) => (
-                <div key={tab.path} onClick={() => setActiveTabPath(tab.path)}
-                  className={`flex items-center gap-2 px-3 py-1.5 border-r border-border cursor-pointer shrink-0 group text-[12px] ${activeTabPath === tab.path ? "bg-card text-foreground" : "text-muted-foreground hover:bg-secondary"}`}>
-                  <span className="truncate max-w-[120px]">{tab.name}</span>
-                  {tab.isDirty && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />}
-                  <button onClick={(e) => { e.stopPropagation(); closeTab(tab.path); }} className="opacity-0 group-hover:opacity-100 hover:text-foreground transition-opacity">
-                    <X className="w-3 h-3" />
+        {/* New File Dialog */}
+        {newFileDialogVisible && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setNewFileDialogVisible(false)}>
+            <div className="bg-background border border-border rounded-lg p-6 w-[420px] shadow-xl" onClick={e => e.stopPropagation()}>
+              <h2 className="text-foreground font-semibold text-sm mb-1">New File</h2>
+              <p className="text-muted-foreground text-xs mb-4">Enter a file name (use / for subdirectories)</p>
+              <input
+                type="text"
+                value={newFileName}
+                onChange={e => setNewFileName(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') handleCreateFile(); if (e.key === 'Escape') setNewFileDialogVisible(false); }}
+                placeholder="e.g. components/MyComponent.tsx"
+                className="w-full bg-muted border border-border rounded px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-foreground/40 mb-4"
+                autoFocus
+              />
+              <div className="flex gap-2 justify-end">
+                <button onClick={() => setNewFileDialogVisible(false)} className="px-4 py-2 text-xs rounded border border-border text-muted-foreground hover:text-foreground transition-colors">Cancel</button>
+                <button onClick={handleCreateFile} disabled={!newFileName.trim()} className="px-4 py-2 text-xs rounded bg-foreground text-background hover:bg-foreground/80 transition-colors disabled:opacity-50">Create</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* New Folder Dialog */}
+        {newFolderDialogVisible && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setNewFolderDialogVisible(false)}>
+            <div className="bg-background border border-border rounded-lg p-6 w-[420px] shadow-xl" onClick={e => e.stopPropagation()}>
+              <h2 className="text-foreground font-semibold text-sm mb-1">New Folder</h2>
+              <p className="text-muted-foreground text-xs mb-4">Enter a folder name (use / for nested folders)</p>
+              <input
+                type="text"
+                value={newFolderName}
+                onChange={e => setNewFolderName(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') handleCreateFolder(); if (e.key === 'Escape') setNewFolderDialogVisible(false); }}
+                placeholder="e.g. components/forms"
+                className="w-full bg-muted border border-border rounded px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-foreground/40 mb-4"
+                autoFocus
+              />
+              <div className="flex gap-2 justify-end">
+                <button onClick={() => setNewFolderDialogVisible(false)} className="px-4 py-2 text-xs rounded border border-border text-muted-foreground hover:text-foreground transition-colors">Cancel</button>
+                <button onClick={handleCreateFolder} disabled={!newFolderName.trim()} className="px-4 py-2 text-xs rounded bg-foreground text-background hover:bg-foreground/80 transition-colors disabled:opacity-50">Create</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Inline AI Edit Overlay */}
+        {inlineEditVisible && (
+          <div className="fixed inset-0 z-50 flex items-start justify-center pt-[20vh] bg-black/40" onClick={() => setInlineEditVisible(false)}>
+            <div className="bg-background border border-border rounded-lg shadow-2xl w-[560px] overflow-hidden" onClick={e => e.stopPropagation()}>
+              <div className="px-4 py-3 border-b border-border flex items-center gap-2">
+                <Zap className="w-4 h-4 text-primary flex-shrink-0" />
+                <span className="text-xs font-semibold text-foreground">Inline AI Edit</span>
+                <span className="text-[10px] text-muted-foreground ml-auto">{activeFilePath?.split('/').pop()}</span>
+              </div>
+              <div className="p-3">
+                <input
+                  ref={inlineEditRef}
+                  type="text"
+                  value={inlineEditQuery}
+                  onChange={e => setInlineEditQuery(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') handleInlineEdit(); if (e.key === 'Escape') setInlineEditVisible(false); }}
+                  placeholder="Describe what to change… (Enter to apply, Esc to cancel)"
+                  className="w-full bg-muted border border-border rounded px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-primary/50"
+                  autoFocus
+                  disabled={inlineEditLoading}
+                />
+                <div className="flex items-center justify-between mt-3">
+                  <span className="text-[10px] text-muted-foreground">Select code first for a targeted edit, or leave selection empty to edit the full file</span>
+                  <button
+                    onClick={handleInlineEdit}
+                    disabled={!inlineEditQuery.trim() || inlineEditLoading}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded bg-primary text-primary-foreground hover:bg-primary/80 transition-colors disabled:opacity-50"
+                  >
+                    {inlineEditLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
+                    {inlineEditLoading ? 'Applying…' : 'Apply'}
                   </button>
                 </div>
-              ))}
+              </div>
             </div>
-          )}
+          </div>
+        )}
 
-          <div className="flex-1 overflow-hidden">
-            {activeDiff ? (
-              <div className="flex flex-col h-full">
-                <div className="flex items-center justify-between px-3 py-1.5 border-b border-border bg-amber-500/5 shrink-0">
-                  <div className="flex items-center gap-2">
-                    <FileCode className="w-3.5 h-3.5 text-amber-400" />
-                    <span className="text-[11px] font-mono text-foreground">{activeDiff.filePath}</span>
-                    <span className="text-[10px] text-amber-400">diff preview</span>
-                    {activeDiff.batchId && <span className="text-[9px] px-1 py-0.5 rounded bg-amber-500/20 text-amber-300">batch</span>}
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <button onClick={() => setActiveDiffId(null)} className="text-[11px] px-2 py-0.5 rounded hover:bg-secondary text-muted-foreground">← Editor</button>
-                    {!isPlanMode && (
-                      <>
-                        <button onClick={() => handleApplyDiff(activeDiff)} className="text-[11px] px-2 py-0.5 rounded bg-green-500/15 text-green-400 hover:bg-green-500/25">
-                          <CheckCircle2 className="w-3 h-3 inline mr-1" />Apply
-                        </button>
-                        {activeDiff.batchId && (
-                          <button onClick={() => handleApplyBatch(activeDiff.batchId!)} className="text-[11px] px-2 py-0.5 rounded bg-green-500/20 text-green-300 hover:bg-green-500/30">
-                            Apply All
-                          </button>
-                        )}
-                        <button onClick={() => handleRejectDiff(activeDiff.id)} className="text-[11px] px-2 py-0.5 rounded bg-red-500/15 text-red-400 hover:bg-red-500/25">
-                          <XCircle className="w-3 h-3 inline mr-1" />Reject
-                        </button>
-                      </>
-                    )}
-                    {isPlanMode && <span className="text-[10px] text-amber-400">Plan mode — apply disabled</span>}
-                  </div>
-                </div>
-                {activeDiff.explanation && (
-                  <div className="px-3 py-1 border-b border-border bg-muted/20 shrink-0">
-                    <p className="text-[10px] text-muted-foreground">{activeDiff.explanation.slice(0, 200)}</p>
-                  </div>
-                )}
-                <div className="flex-1 overflow-hidden">
-                  <DiffEditor height="100%" original={activeDiff.originalContent} modified={activeDiff.proposedContent} language={activeDiff.language} theme="vs-dark"
-                    options={{ fontSize: 12, minimap: { enabled: false }, scrollBeyondLastLine: false, readOnly: true, renderSideBySide: true }} />
-                </div>
-              </div>
-            ) : activeTab ? (
-              <Editor height="100%" language={getLanguage(activeTab.path)} value={activeTab.content ?? ""} theme="vs-dark"
-                onChange={(value) => updateTabContent(activeTab.path, value ?? "")}
-                options={{ fontSize: 13, minimap: { enabled: false }, wordWrap: "on", scrollBeyondLastLine: false, renderWhitespace: "none", padding: { top: 12 }, automaticLayout: true }} />
-            ) : (
-              <div className="flex items-center justify-center h-full text-muted-foreground">
-                <div className="text-center">
-                  <Code2 className="w-10 h-10 mx-auto mb-3 opacity-20" />
-                  <p className="text-[13px]">Open a file from the explorer</p>
-                  <p className="text-[11px] mt-1 opacity-60">Ctrl+Click to multi-select · Ctrl+P to search</p>
-                </div>
-              </div>
-            )}
+        {/* Header/Title Bar */}
+        <div className="flex items-center px-3 h-8 bg-sidebar border-b border-border justify-between">
+          <span className="text-foreground text-[11px] font-semibold">{isSelfUpgrade ? 'Self-Upgrade' : currentProjectId}</span>
+          <div className="flex items-center gap-2">
+            <ModelSelector compact />
+            {!isSelfUpgrade && <ModeToggle currentMode="code" />}
           </div>
         </div>
 
-        {aiPanelOpen && (
-          <div className="w-80 border-l border-border bg-background flex flex-col shrink-0 overflow-hidden">
-            <div className="flex items-center justify-between px-2 py-1.5 border-b border-border shrink-0">
-              <div className="flex gap-0.5 overflow-x-auto scrollbar-thin flex-wrap">
-                {RIGHT_TABS.map((tab) => (
-                  <button key={tab.id} onClick={() => setRightTab(tab.id)}
-                    className={`px-2 py-0.5 text-[10px] rounded font-medium whitespace-nowrap transition-colors ${rightTab === tab.id ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground"}`}>
-                    {tab.label}
-                  </button>
-                ))}
-              </div>
-              <button onClick={() => setAiPanelOpen(false)} className="p-0.5 rounded hover:bg-secondary text-muted-foreground shrink-0">
-                <ChevronRight className="w-3.5 h-3.5" />
+        {/* Main Content */}
+        <div className="flex flex-1 overflow-hidden">
+          {/* Activity Bar */}
+          <div className="w-12 bg-activity-bar border-r border-border flex flex-col items-center py-1 flex-shrink-0">
+            {activityBarItems.map(item => (
+              <button
+                key={item.id}
+                onClick={() => {
+                  if (activeSidebar === item.id && sidebarVisible) setSidebarVisible(false);
+                  else { setActiveSidebar(item.id); setSidebarVisible(true); }
+                }}
+                title={item.label}
+                className={`w-10 h-10 flex items-center justify-center rounded-md mb-0.5 transition-colors ${
+                  activeSidebar === item.id && sidebarVisible
+                    ? "text-activity-bar-active border-l-2 border-activity-bar-active bg-accent/30"
+                    : "text-activity-bar-foreground hover:text-foreground"
+                }`}
+              >
+                <item.icon className="w-[18px] h-[18px]" />
               </button>
-            </div>
+            ))}
+            <div className="flex-1" />
+            <button
+              onClick={() => navigate("/settings")}
+              title="Settings"
+              className="w-10 h-10 flex items-center justify-center text-activity-bar-foreground hover:text-foreground transition-colors"
+            >
+              <Settings2 className="w-[18px] h-[18px]" />
+            </button>
+          </div>
 
-            {rightTab === "chat" && (
-              <>
-                {(activeTab || selectedPaths.length > 0) && (
-                  <div className="px-3 py-1.5 border-b border-border bg-muted/30 shrink-0">
-                    {activeTab && <p className="text-[10px] text-muted-foreground truncate">Active: <span className="text-foreground font-mono">{activeTab.name}</span></p>}
-                    {selectedPaths.length > 0 && <p className="text-[10px] text-muted-foreground">Selected: <span className="text-foreground">{selectedPaths.length} file(s)</span></p>}
-                  </div>
-                )}
-                <div className="flex-1 overflow-y-auto scrollbar-thin p-2 space-y-2">
-                  {aiMessages.length === 0 && (
-                    <div className="space-y-1.5 py-2">
-                      <p className="text-[11px] text-muted-foreground text-center">{isPlanMode ? "Plan mode: structured analysis only." : "Ask AI to explain, plan, or propose patches."}</p>
-                      {["Explain this file", "Propose a patch", "What should I fix?", "Analyze selected files"].map((s) => (
-                        <button key={s} onClick={() => setAiInput(s)} className="w-full text-left text-[10px] px-2 py-1.5 rounded border border-border hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors">{s}</button>
-                      ))}
-                    </div>
-                  )}
-                  {aiMessages.map((m, i) => (
-                    <div key={i} className={`rounded-lg p-2 text-[11px] ${m.role === "user" ? "bg-primary/10 text-foreground ml-4" : "bg-secondary text-foreground mr-4"}`}>
-                      <p className="whitespace-pre-wrap leading-relaxed">{m.text}</p>
-                      {m.hasDiff && m.diffId && pendingDiffs.find((d) => d.id === m.diffId) && (
-                        <button onClick={() => { setActiveDiffId(m.diffId!); setRightTab("diffs"); }} className="mt-1.5 text-[10px] px-2 py-0.5 rounded bg-amber-500/15 text-amber-400 hover:bg-amber-500/25">View Diff →</button>
-                      )}
-                    </div>
-                  ))}
-                  {aiLoading && <div className="bg-secondary rounded-lg p-2 mr-4"><Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" /></div>}
-                  <div ref={aiEndRef} />
+          {/* Sidebar */}
+          {sidebarVisible && (
+            <ResizablePanel
+              direction="horizontal"
+              initialSize={sidebarWidth}
+              minSize={180}
+              maxSize={500}
+              onResize={(newWidth) => setSidebarWidth(newWidth)}
+            >
+              <div className="h-full bg-sidebar border-r border-border flex flex-col flex-shrink-0">
+                <div className="flex items-center justify-between px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  <span>
+                    {activeSidebar === "explorer" ? "Explorer"
+                      : activeSidebar === "search" ? "Search"
+                      : activeSidebar === "git" ? "Source Control"
+                      : activeSidebar === "debug" ? "Run & Debug"
+                      : activeSidebar === "extensions" ? "Extensions"
+                      : activeSidebar === "testing" ? "Testing"
+                      : activeSidebar}
+                  </span>
                 </div>
-                <div className="p-2 border-t border-border shrink-0">
-                  {aiMessages.length > 0 && (
-                    <button onClick={() => setAiMessages([])} className="w-full text-[9px] text-muted-foreground hover:text-foreground mb-1 text-right">Clear history</button>
-                  )}
-                  <div className="flex gap-1">
-                    <textarea value={aiInput} onChange={(e) => setAiInput(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleAiSend(); } }}
-                      placeholder={isPlanMode ? "Ask AI to analyze or plan…" : "Ask AI to explain, edit, or patch…"} rows={2}
-                      className="flex-1 resize-none bg-muted border border-border rounded-lg px-2 py-1.5 text-[11px] text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring/30" />
-                    <button onClick={handleAiSend} disabled={aiLoading || !aiInput.trim()} className="self-end p-1.5 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50">
-                      <Send className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
-              </>
-            )}
 
-            {rightTab === "diffs" && (
-              <div className="flex-1 overflow-y-auto scrollbar-thin p-2 space-y-2">
-                {pendingDiffs.length === 0 && <p className="text-[11px] text-muted-foreground text-center py-4">No pending diffs.</p>}
-
-                {batchIds.map((batchId) => {
-                  const batch = pendingDiffs.filter((d) => d.batchId === batchId);
-                  return (
-                    <div key={batchId} className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-2 space-y-1.5">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[10px] font-semibold text-amber-400">Batch ({batch.length} files)</span>
-                        {!isPlanMode && (
-                          <div className="flex gap-1">
-                            <button onClick={() => handleApplyBatch(batchId)} className="text-[10px] px-2 py-0.5 rounded bg-green-500/15 text-green-400 hover:bg-green-500/25">Apply All</button>
-                            <button onClick={() => handleRejectBatch(batchId)} className="text-[10px] px-2 py-0.5 rounded bg-red-500/15 text-red-400 hover:bg-red-500/25">Reject All</button>
-                          </div>
-                        )}
-                      </div>
-                      {batch.map((diff) => (
-                        <div key={diff.id} className="rounded border border-border p-1.5 flex items-center justify-between">
-                          <span className="text-[10px] font-mono text-foreground truncate">{diff.filePath.split("/").pop()}</span>
-                          <div className="flex gap-1 shrink-0">
-                            <button onClick={() => { setActiveDiffId(diff.id); }} className="text-[9px] px-1.5 py-0.5 rounded bg-secondary text-foreground">Preview</button>
-                            {!isPlanMode && <button onClick={() => handleApplyDiff(diff)} className="text-[9px] px-1.5 py-0.5 rounded bg-green-500/15 text-green-400">Apply</button>}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  );
-                })}
-
-                {singleDiffs.map((diff) => (
-                  <div key={diff.id} className={`rounded-lg border p-2 space-y-1.5 ${activeDiffId === diff.id ? "border-amber-500/50 bg-amber-500/5" : "border-border"}`}>
-                    <div className="flex items-center justify-between">
-                      <span className="text-[11px] font-mono text-foreground truncate">{diff.filePath.split("/").pop()}</span>
-                    </div>
-                    {diff.explanation && <p className="text-[10px] text-muted-foreground line-clamp-2">{diff.explanation}</p>}
-                    <div className="flex gap-1.5">
-                      <button onClick={() => setActiveDiffId(activeDiffId === diff.id ? null : diff.id)} className="text-[10px] px-2 py-0.5 rounded bg-secondary text-foreground">{activeDiffId === diff.id ? "Hide" : "Preview"}</button>
-                      {!isPlanMode && (
-                        <>
-                          <button onClick={() => handleApplyDiff(diff)} className="text-[10px] px-2 py-0.5 rounded bg-green-500/15 text-green-400 hover:bg-green-500/25">Apply</button>
-                          <button onClick={() => handleRejectDiff(diff.id)} className="text-[10px] px-2 py-0.5 rounded bg-red-500/15 text-red-400 hover:bg-red-500/25">Reject</button>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {rightTab === "approvals" && (
-              <div className="flex-1 overflow-y-auto scrollbar-thin p-2 space-y-2">
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-[10px] text-muted-foreground">Backend approvals</span>
-                  <button onClick={brainRefresh} className="p-0.5 rounded hover:bg-secondary text-muted-foreground"><RefreshCw className="w-3 h-3" /></button>
-                </div>
-                {pendingApprovals.length === 0 && <p className="text-[11px] text-muted-foreground text-center py-4">No pending approvals.</p>}
-                {pendingApprovals.map((a) => {
-                  const type = a.approval_type || "approval";
-                  const typeColor = type.includes("write") || type.includes("file") ? "text-amber-400" : type.includes("command") ? "text-red-400" : type.includes("snapshot") ? "text-blue-400" : "text-muted-foreground";
-                  return (
-                    <div key={a.id} className="rounded-lg border border-border p-2.5 space-y-1.5">
-                      <div className="flex items-center gap-2">
-                        <AlertCircle className={`w-3.5 h-3.5 ${typeColor} shrink-0`} />
-                        <span className={`text-[11px] font-medium ${typeColor} capitalize`}>{type.replace(/_/g, " ")}</span>
-                      </div>
-                      {(a as any).description && <p className="text-[10px] text-muted-foreground">{(a as any).description}</p>}
-                      {(a as any).payload?.path && <p className="text-[10px] text-muted-foreground font-mono">{(a as any).payload.path}</p>}
-                      {(a as any).payload?.command && <p className="text-[10px] text-muted-foreground font-mono">{Array.isArray((a as any).payload.command) ? (a as any).payload.command.join(" ") : (a as any).payload.command}</p>}
-                      <div className="flex gap-1.5">
-                        <button onClick={() => handleApproveBackend(a.id)} disabled={isPlanMode} className="text-[10px] px-2 py-0.5 rounded bg-green-500/15 text-green-400 hover:bg-green-500/25 disabled:opacity-40">Approve</button>
-                        <button onClick={() => handleRejectBackend(a.id)} className="text-[10px] px-2 py-0.5 rounded bg-red-500/15 text-red-400 hover:bg-red-500/25">Reject</button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {rightTab === "git" && (
-              <div className="flex-1 flex flex-col overflow-hidden">
-                <div className="flex items-center justify-between px-3 py-1.5 border-b border-border shrink-0">
-                  <div className="flex items-center gap-1.5"><GitBranch className="w-3.5 h-3.5 text-muted-foreground" /><span className="text-[10px] text-muted-foreground">Git Status</span></div>
-                  <button onClick={loadGitStatus} className="p-0.5 rounded hover:bg-secondary text-muted-foreground"><RefreshCw className={`w-3 h-3 ${gitLoading ? "animate-spin" : ""}`} /></button>
-                </div>
-                <div className="flex-1 overflow-y-auto scrollbar-thin p-2 space-y-2">
-                  {gitLoading && <Loader2 className="w-4 h-4 animate-spin text-muted-foreground mx-auto mt-4" />}
-                  {gitStatus?.error && <div className="rounded-lg border border-border p-2"><p className="text-[11px] text-muted-foreground">{gitStatus.error}</p></div>}
-                  {gitStatus && !gitStatus.error && (
-                    <div className="space-y-2">
-                      {gitStatus.branch && (
-                        <div className="flex items-center gap-2 text-[11px]">
-                          <GitBranch className="w-3.5 h-3.5 text-primary" />
-                          <span className="text-foreground font-mono">{gitStatus.branch}</span>
-                        </div>
-                      )}
-                      {gitStatus.is_dirty !== undefined && (
-                        <div className={`text-[10px] px-2 py-1 rounded ${gitStatus.is_dirty ? "bg-amber-500/10 text-amber-400" : "bg-green-500/10 text-green-400"}`}>
-                          {gitStatus.is_dirty ? "Uncommitted changes" : "Working tree clean"}
-                        </div>
-                      )}
-                      {gitStatus.changed_files?.length > 0 && (
-                        <div className="space-y-1">
-                          <p className="text-[10px] text-muted-foreground font-semibold">Changed:</p>
-                          {gitStatus.changed_files.map((f: string, i: number) => (
-                            <div key={i} className="text-[10px] font-mono text-amber-300/80 truncate">{f}</div>
-                          ))}
-                        </div>
-                      )}
-                      {gitStatus.last_commit && (
-                        <div className="rounded border border-border p-2">
-                          <p className="text-[10px] text-muted-foreground">Last commit:</p>
-                          <p className="text-[10px] text-foreground font-mono truncate">{gitStatus.last_commit.message || gitStatus.last_commit}</p>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-                {!isPlanMode && (
-                  <div className="p-2 border-t border-border shrink-0 space-y-1.5">
-                    <p className="text-[10px] text-muted-foreground font-semibold">Commit</p>
-                    <input value={commitMsg} onChange={(e) => setCommitMsg(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === "Enter") handleCommit(); }}
-                      placeholder="Commit message…"
-                      className="w-full bg-muted border border-border rounded-lg px-2 py-1.5 text-[11px] text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring/30" />
-                    <button onClick={handleCommit} disabled={!commitMsg.trim() || committing}
-                      className="w-full flex items-center justify-center gap-1 py-1 rounded-lg bg-primary/15 text-primary hover:bg-primary/25 text-[11px] disabled:opacity-40">
-                      {committing ? <Loader2 className="w-3 h-3 animate-spin" /> : <GitCommit className="w-3 h-3" />}
-                      Commit
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {rightTab === "run" && (
-              <div className="flex-1 flex flex-col overflow-hidden">
-                <div className="flex items-center justify-between px-2 py-1.5 border-b border-border shrink-0">
-                  <span className="text-[10px] text-muted-foreground">Tests & Commands</span>
-                  <button onClick={loadTests} className="p-0.5 rounded hover:bg-secondary text-muted-foreground"><RefreshCw className={`w-3 h-3 ${testsLoading ? "animate-spin" : ""}`} /></button>
-                </div>
-                <div className="flex-1 overflow-y-auto scrollbar-thin p-2 space-y-2">
-                  {testsLoading && <Loader2 className="w-4 h-4 animate-spin text-muted-foreground mx-auto mt-4" />}
-                  {!testsLoading && tests.length === 0 && <p className="text-[11px] text-muted-foreground text-center py-2">No tests defined.</p>}
-                  {tests.map((test) => (
-                    <div key={test.id} className="rounded-lg border border-border p-2 space-y-1">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[11px] text-foreground">{test.title}</span>
-                        <button onClick={() => handleRunTest(test)} disabled={isPlanMode}
-                          className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary hover:bg-primary/20 disabled:opacity-40">
-                          <Play className="w-3 h-3" /> Run
+                {activeSidebar === "explorer" && (
+                  <div className="flex-1 overflow-y-auto">
+                    <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center justify-between">
+                      <span>{currentProjectId}</span>
+                      <div className="flex gap-0.5">
+                        <button onClick={handleNewFile} className="p-0.5 rounded hover:bg-accent text-muted-foreground" title="New File (Ctrl+N)">
+                          <Plus className="w-3 h-3" />
+                        </button>
+                        <button onClick={handleNewFolder} className="p-0.5 rounded hover:bg-accent text-muted-foreground" title="New Folder">
+                          <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>
+                        </button>
+                        <button className="p-0.5 rounded hover:bg-accent text-muted-foreground" title="More Options">
+                          <MoreHorizontal className="w-3 h-3" />
                         </button>
                       </div>
-                      {test.command && <p className="text-[10px] font-mono text-muted-foreground">{Array.isArray(test.command) ? test.command.join(" ") : test.command}</p>}
                     </div>
-                  ))}
-
-                  {runOutputs.length > 0 && (
-                    <div className="space-y-1.5">
-                      <div className="flex items-center justify-between">
-                        <p className="text-[10px] text-muted-foreground font-semibold">Output</p>
-                        <button onClick={() => setRunOutputs([])} className="text-[9px] text-muted-foreground hover:text-foreground">Clear</button>
-                      </div>
-                      {runOutputs.map((r) => (
-                        <div key={r.id} className={`rounded border p-1.5 ${r.status === "success" ? "border-green-500/30 bg-green-500/5" : r.status === "error" ? "border-red-500/30 bg-red-500/5" : "border-border"}`}>
-                          <div className="flex items-center gap-1.5 mb-1">
-                            {r.status === "running" && <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />}
-                            {r.status === "success" && <CheckCircle2 className="w-3 h-3 text-green-400" />}
-                            {r.status === "error" && <XCircle className="w-3 h-3 text-red-400" />}
-                            <span className="text-[10px] text-foreground truncate">{r.label}</span>
-                          </div>
-                          <pre className="text-[9px] font-mono text-muted-foreground whitespace-pre-wrap max-h-24 overflow-y-auto scrollbar-thin">{r.output}</pre>
-                          {r.status === "error" && r.errorText && (
-                            <button onClick={() => handleWhyFailing(r.errorText!)} className="mt-1 text-[9px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 hover:bg-amber-500/25">Why failing? →</button>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                {!isPlanMode && (
-                  <div className="p-2 border-t border-border shrink-0 space-y-1.5">
-                    <p className="text-[10px] text-muted-foreground font-semibold flex items-center gap-1"><Terminal className="w-3 h-3" /> Ad-hoc command</p>
-                    <div className="flex gap-1">
-                      <input value={cmdInput} onChange={(e) => setCmdInput(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === "Enter") handleRunCommand(); }}
-                        placeholder="python manage.py …"
-                        className="flex-1 bg-muted border border-border rounded-lg px-2 py-1.5 text-[11px] font-mono text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring/30" />
-                      <button onClick={handleRunCommand} disabled={!cmdInput.trim() || cmdRunning} className="p-1.5 rounded-lg bg-primary/15 text-primary hover:bg-primary/25 disabled:opacity-40">
-                        {cmdRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
-                      </button>
-                    </div>
-                    <p className="text-[9px] text-muted-foreground">Allowed: {["python", "node", "npm", "npx", "git", "pytest"].join(", ")}</p>
+                    <FileTree projectName={currentProjectId} onFileClick={handleFileClick} refreshKey={fileTreeRefreshKey} />
                   </div>
                 )}
-              </div>
-            )}
 
-            {rightTab === "intel" && (
-              <div className="flex-1 flex flex-col overflow-hidden">
-                <div className="px-2 py-1.5 border-b border-border shrink-0">
-                  <p className="text-[10px] text-muted-foreground font-semibold mb-1.5">Workspace Intelligence</p>
-                  <div className="grid grid-cols-3 gap-1">
-                    {([
-                      { id: "map", icon: Map, label: "Map" },
-                      { id: "targets", icon: Target, label: "Targets" },
-                      { id: "wiring", icon: Zap, label: "Wiring" },
-                      { id: "contracts", icon: ShieldCheck, label: "Contracts" },
-                      { id: "state", icon: Database, label: "State" },
-                      { id: "cleanup", icon: Trash2, label: "Cleanup" },
-                      { id: "memory", icon: BookOpen, label: "Memory" },
-                    ] as const).map(({ id, icon: Icon, label }) => (
-                      <button key={id} onClick={() => handleIntel(id as any)}
-                        className={`flex flex-col items-center gap-0.5 p-1.5 rounded border text-[10px] transition-colors ${intelMode === id ? "border-primary/50 bg-primary/10 text-primary" : "border-border hover:bg-secondary text-muted-foreground hover:text-foreground"}`}>
-                        <Icon className="w-3.5 h-3.5" />
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-                  {(intelMode === "map" || intelMode === "targets" || intelMode === "wiring" || intelMode === "state" || intelMode === "memory") && (
-                    <input value={intelInput} onChange={(e) => setIntelInput(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === "Enter") handleIntel(intelMode); }}
-                      placeholder={intelMode === "map" ? "Focus area (optional)…" : intelMode === "targets" ? "Task description…" : intelMode === "wiring" ? "Feature to trace…" : "Focus (optional)…"}
-                      className="mt-1.5 w-full bg-muted border border-border rounded-lg px-2 py-1.5 text-[11px] text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring/30" />
-                  )}
-                </div>
-                <div className="flex-1 overflow-y-auto scrollbar-thin p-2 space-y-2">
-                  {intelLoading && (
-                    <div className="flex items-center justify-center py-6">
-                      <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
-                    </div>
-                  )}
-                  {!intelLoading && intelResult && (
-                    <>
-                      {intelResult.error && <p className="text-[11px] text-red-400">{intelResult.error}</p>}
-                      {intelMode === "map" && intelResult.analysis && <StructuredJsonCard data={intelResult.analysis} title="Workspace Map" />}
-                      {intelMode === "targets" && intelResult.targets && <StructuredJsonCard data={intelResult.targets} title="File Targets" />}
-                      {intelMode === "wiring" && intelResult.trace && (
+                {activeSidebar === "search" && (
+                  <SearchPanel
+                    searchQuery={searchQuery}
+                    onSearchQueryChange={setSearchQuery}
+                    searchResults={searchResults}
+                    isSearching={isSearching}
+                    onResultClick={handleSearchResultClick}
+                    searchOptions={searchOptions}
+                    onSearchOptionsChange={setSearchOptions}
+                    onSearch={handleSearch}
+                    onReplace={handleReplaceInFile}
+                    onReplaceAll={handleReplaceAllInFiles}
+                  />
+                )}
+
+                {activeSidebar === "git" && (
+                  <GitPanel projectId={currentProjectId} />
+                )}
+
+                {activeSidebar === "debug" && (
+                  <div className="flex flex-col h-full overflow-y-auto">
+                    <div className="px-3 py-2 space-y-3">
+                      <div className="space-y-1.5">
+                        <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">Quick Run</p>
+                        {[
+                          { label: "Run Python File", icon: Play, cmd: activeFilePath?.endsWith('.py') ? `python "${activeFilePath}"` : "python main.py" },
+                          { label: "Run Node.js File", icon: Play, cmd: activeFilePath?.endsWith('.js') ? `node "${activeFilePath}"` : "node index.js" },
+                          { label: "npm start", icon: Zap, cmd: "npm start" },
+                          { label: "npm run dev", icon: Zap, cmd: "npm run dev" },
+                          { label: "npm run build", icon: Zap, cmd: "npm run build" },
+                          { label: "npm test", icon: FlaskConical, cmd: "npm test" },
+                        ].map((item) => (
+                          <button
+                            key={item.label}
+                            onClick={() => handleRunDebug(item.cmd)}
+                            className="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-[11px] text-foreground hover:bg-secondary/70 transition-colors text-left"
+                          >
+                            <item.icon className="w-3 h-3 text-success flex-shrink-0" />
+                            <span className="flex-1 truncate">{item.label}</span>
+                            <code className="text-[9px] text-muted-foreground truncate max-w-[80px] hidden">{item.cmd}</code>
+                          </button>
+                        ))}
+                      </div>
+                      {activeFilePath && (
                         <div className="space-y-1.5">
-                          <p className="text-[10px] font-semibold text-foreground">Wiring trace: {intelResult.feature}</p>
-                          {(intelResult.trace.chain || []).map((step: any, i: number) => (
-                            <div key={i} className="rounded border border-border p-1.5">
-                              <p className="text-[10px] font-mono text-primary">{step.layer}</p>
-                              <p className="text-[10px] text-foreground">{step.file} — {step.symbol}</p>
-                              {step.notes && <p className="text-[9px] text-muted-foreground">{step.notes}</p>}
-                            </div>
-                          ))}
-                          {intelResult.trace.gaps?.length > 0 && (
-                            <div className="rounded border border-amber-500/30 bg-amber-500/5 p-1.5">
-                              <p className="text-[10px] text-amber-400 font-semibold">Gaps:</p>
-                              {intelResult.trace.gaps.map((g: string, i: number) => <p key={i} className="text-[10px] text-muted-foreground">{g}</p>)}
-                            </div>
-                          )}
+                          <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">Active File</p>
+                          <button
+                            onClick={() => {
+                              const ext = activeFilePath.split('.').pop()?.toLowerCase();
+                              const cmds: Record<string, string> = { py: `python "${activeFilePath}"`, js: `node "${activeFilePath}"`, ts: `ts-node "${activeFilePath}"`, sh: `bash "${activeFilePath}"` };
+                              const cmd = cmds[ext ?? ''] ?? `echo "Cannot run .${ext} directly"`;
+                              handleRunDebug(cmd);
+                            }}
+                            className="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-[11px] bg-success/10 text-success hover:bg-success/20 transition-colors text-left"
+                          >
+                            <Play className="w-3 h-3 flex-shrink-0" />
+                            <span className="flex-1 truncate">Run {activeFilePath.split('/').pop()}</span>
+                          </button>
                         </div>
                       )}
-                      {intelMode === "contracts" && intelResult.analysis && (
+                      {debugRunning && (
                         <div className="space-y-1.5">
-                          <p className="text-[10px] text-muted-foreground">{intelResult.analysis.summary}</p>
-                          {(intelResult.analysis.issues || []).map((issue: any, i: number) => (
-                            <div key={i} className={`rounded border p-1.5 ${issue.severity === "high" ? "border-red-500/30 bg-red-500/5" : "border-amber-500/20 bg-amber-500/5"}`}>
-                              <p className={`text-[10px] font-semibold ${issue.severity === "high" ? "text-red-400" : "text-amber-400"}`}>{issue.type}</p>
-                              <p className="text-[10px] text-muted-foreground">{issue.description}</p>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      {intelMode === "state" && intelResult.state && <StructuredJsonCard data={intelResult.state} title="Project State" />}
-                      {intelMode === "cleanup" && (
-                        <div className="space-y-1.5">
-                          <p className="text-[10px] text-muted-foreground">{intelResult.count} junk item(s) found</p>
-                          {(intelResult.junk_items || []).map((item: any, i: number) => (
-                            <div key={i} className="rounded border border-border p-1.5 flex items-start justify-between gap-1">
-                              <div className="min-w-0">
-                                <p className="text-[10px] font-mono text-amber-300/80 truncate">{item.path}</p>
-                                <p className="text-[9px] text-muted-foreground">{item.type} · {item.size > 0 ? `${(item.size / 1024).toFixed(1)}kb` : "dir"}</p>
-                              </div>
-                              <button onClick={() => handleDeleteJunk(item.path)} disabled={deletingPath === item.path}
-                                className="shrink-0 p-0.5 rounded hover:bg-red-500/20 text-red-400/70 hover:text-red-400 disabled:opacity-40">
-                                {deletingPath === item.path ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
-                              </button>
-                            </div>
-                          ))}
-                          {intelResult.note && <p className="text-[9px] text-muted-foreground italic">{intelResult.note}</p>}
-                        </div>
-                      )}
-                      {intelMode === "memory" && (
-                        <div className="space-y-2">
-                          <p className="text-[10px] text-muted-foreground font-semibold">Coding Memory — {memoryEntries.length} entries</p>
-                          {memoryEntries.length === 0 && <p className="text-[11px] text-muted-foreground">No memory entries yet.</p>}
-                          {memoryEntries.map((entry: any, i: number) => (
-                            <div key={i} className="rounded border border-border p-1.5">
-                              <p className="text-[10px] font-mono text-primary/80 truncate">{entry.key}</p>
-                              <p className="text-[10px] text-foreground whitespace-pre-wrap">{entry.value}</p>
-                              {entry.pinned && <span className="text-[9px] text-amber-400">pinned</span>}
-                            </div>
-                          ))}
-                          <div className="flex gap-1 pt-1">
-                            <input value={memInput} onChange={(e) => setMemInput(e.target.value)}
-                              onKeyDown={(e) => { if (e.key === "Enter") handleMemorySave(); }}
-                              placeholder="Add memory note…"
-                              className="flex-1 bg-muted border border-border rounded-lg px-2 py-1.5 text-[11px] text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring/30" />
-                            <button onClick={handleMemorySave} disabled={!memInput.trim() || memSaving}
-                              className="p-1.5 rounded-lg bg-primary/15 text-primary hover:bg-primary/25 disabled:opacity-40">
-                              {memSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+                          <div className="flex items-center justify-between">
+                            <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium flex items-center gap-1">
+                              <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />
+                              Running
+                            </p>
+                            <button onClick={() => { cancelDebugRef.current?.(); setDebugRunning(false); }} className="text-[9px] text-muted-foreground hover:text-foreground px-1.5 py-0.5 rounded bg-secondary flex items-center gap-0.5">
+                              <Square className="w-2.5 h-2.5" /> Stop
                             </button>
                           </div>
+                          <div className="bg-black/30 rounded p-2 max-h-40 overflow-y-auto scrollbar-thin">
+                            {debugOutput.slice(-20).map((line, i) => (
+                              <div key={i} className="text-[10px] font-mono text-green-400 whitespace-pre-wrap">{line}</div>
+                            ))}
+                          </div>
                         </div>
                       )}
-                    </>
-                  )}
-                  {!intelLoading && !intelResult && (
-                    <div className="py-4 text-center space-y-2">
-                      <HelpCircle className="w-8 h-8 mx-auto text-muted-foreground/30" />
-                      <p className="text-[11px] text-muted-foreground">Select an intelligence tool above.</p>
-                      <div className="text-[10px] text-muted-foreground space-y-1 text-left">
-                        <p><span className="text-foreground">Map</span> — analyze project structure</p>
-                        <p><span className="text-foreground">Targets</span> — which files to touch for a task</p>
-                        <p><span className="text-foreground">Wiring</span> — trace a feature front→back</p>
-                        <p><span className="text-foreground">Contracts</span> — detect API mismatches</p>
-                        <p><span className="text-foreground">State</span> — current project state summary</p>
-                        <p><span className="text-foreground">Cleanup</span> — find junk/backup files</p>
-                        <p><span className="text-foreground">Memory</span> — persistent coding notes</p>
+                    </div>
+                  </div>
+                )}
+
+                {activeSidebar === "extensions" && (
+                  <div className="flex flex-col h-full overflow-y-auto">
+                    <div className="px-3 py-2 space-y-3">
+                      <div className="space-y-1.5">
+                        <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">AI Model</p>
+                        <div className="px-1">
+                          <ModelSelector className="w-full" />
+                        </div>
                       </div>
+                      <div className="space-y-1.5">
+                        <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">Built-in Tools</p>
+                        {[
+                          { label: "AI Chat Assistant", icon: MessageCircle, desc: "Chat with AI about your code", active: true },
+                          { label: "Code Agent", icon: Zap, desc: "Autonomous code editing AI", active: true },
+                          { label: "Git Integration", icon: GitBranch, desc: "Source control with AI commits", active: true },
+                          { label: "Problems Panel", icon: AlertCircle, desc: "AI-powered code diagnostics", active: true },
+                          { label: "File Search", icon: Search, desc: "Semantic + text search", active: true },
+                          { label: "Terminal", icon: TerminalIcon, desc: "Integrated multi-tab terminal", active: true },
+                          { label: "Deep Research", icon: FlaskConical, desc: "AI research on any topic", active: true },
+                          { label: "CoWork", icon: Cpu, desc: "Workspace automation", active: true },
+                        ].map((ext) => (
+                          <div key={ext.label} className="flex items-center gap-2.5 px-2 py-2 rounded-lg hover:bg-secondary/50 transition-colors">
+                            <ext.icon className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
+                            <div className="flex-1 min-w-0">
+                              <div className="text-[11px] text-foreground font-medium truncate">{ext.label}</div>
+                              <div className="text-[10px] text-muted-foreground truncate">{ext.desc}</div>
+                            </div>
+                            {ext.active && <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-success/15 text-success font-medium flex-shrink-0">On</span>}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {activeSidebar === "testing" && (
+                  <div className="flex flex-col h-full overflow-y-auto">
+                    <div className="px-3 py-2 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">Test Cases</p>
+                        <div className="flex gap-1">
+                          <button onClick={fetchTests} className="p-0.5 rounded hover:bg-accent text-muted-foreground" title="Refresh"><RefreshCw className="w-3 h-3" /></button>
+                          <button onClick={() => setAddTestVisible(v => !v)} className="p-0.5 rounded hover:bg-accent text-muted-foreground" title="Add Test"><Plus className="w-3 h-3" /></button>
+                        </div>
+                      </div>
+                      {addTestVisible && (
+                        <div className="bg-secondary/40 rounded-lg p-2.5 space-y-2">
+                          <input
+                            value={newTestTitle}
+                            onChange={e => setNewTestTitle(e.target.value)}
+                            placeholder="Test name"
+                            className="w-full bg-background border border-border rounded px-2 py-1 text-[11px] text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring/30"
+                          />
+                          <input
+                            value={newTestCommand}
+                            onChange={e => setNewTestCommand(e.target.value)}
+                            placeholder="Command (e.g. npm test)"
+                            className="w-full bg-background border border-border rounded px-2 py-1 text-[11px] text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring/30"
+                            onKeyDown={e => e.key === 'Enter' && handleAddTest()}
+                          />
+                          <div className="flex gap-1.5">
+                            <button onClick={handleAddTest} disabled={!newTestTitle.trim() || !newTestCommand.trim()} className="flex-1 py-1 text-[10px] rounded bg-foreground text-background disabled:opacity-40 hover:bg-foreground/80 transition-colors">Add</button>
+                            <button onClick={() => setAddTestVisible(false)} className="px-2 py-1 text-[10px] rounded border border-border text-muted-foreground hover:text-foreground transition-colors">Cancel</button>
+                          </div>
+                        </div>
+                      )}
+                      {testCases.length === 0 ? (
+                        <div className="text-center py-6 text-muted-foreground">
+                          <TestTube className="w-6 h-6 mx-auto mb-2 opacity-30" />
+                          <p className="text-[11px]">No tests yet</p>
+                          <p className="text-[10px] mt-1">Click + to add a test</p>
+                        </div>
+                      ) : (
+                        <div className="space-y-1.5">
+                          {testCases.map((tc) => {
+                            const result = testResults[tc.id];
+                            const isRunning = runningTestId === tc.id;
+                            return (
+                              <div key={tc.id} className="bg-secondary/30 rounded-lg p-2 space-y-1">
+                                <div className="flex items-center gap-2">
+                                  {result ? (
+                                    result.passed
+                                      ? <CheckCircle2 className="w-3.5 h-3.5 text-success flex-shrink-0" />
+                                      : <XCircle className="w-3.5 h-3.5 text-destructive flex-shrink-0" />
+                                  ) : (
+                                    <div className="w-3.5 h-3.5 rounded-full border border-border flex-shrink-0" />
+                                  )}
+                                  <span className="flex-1 text-[11px] text-foreground truncate">{tc.title}</span>
+                                  <button
+                                    onClick={() => handleRunTest(tc.id)}
+                                    disabled={!!runningTestId}
+                                    className="p-0.5 rounded hover:bg-success/20 text-success disabled:opacity-40 transition-colors"
+                                    title="Run test"
+                                  >
+                                    {isRunning ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
+                                  </button>
+                                  <button onClick={() => handleDeleteTest(tc.id)} className="p-0.5 rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive transition-colors" title="Delete"><X className="w-3 h-3" /></button>
+                                </div>
+                                <div className="text-[9px] font-mono text-muted-foreground truncate">{(tc.command ?? []).join(' ')}</div>
+                                {result?.output && (
+                                  <div className={`text-[9px] font-mono rounded px-1.5 py-1 max-h-20 overflow-y-auto ${result.passed ? 'bg-success/10 text-success' : 'bg-destructive/10 text-destructive'}`}>
+                                    {result.output.slice(0, 300)}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </ResizablePanel>
+          )}
+
+          {/* Editor Area */}
+          <div className="flex-1 flex flex-col overflow-hidden min-w-0" style={{ minWidth: 0 }}>
+            {/* Editor and Terminal Container */}
+            <div className="flex-1 flex flex-col overflow-hidden" style={{ minHeight: 0 }}>
+              {/* Editor - takes remaining space above terminal */}
+              <div className="flex-1 flex flex-col overflow-hidden" style={{ minHeight: terminalPanelOpen ? '150px' : 0 }}>
+                <SplitEditorView
+                  projectName={currentProjectId}
+                  onContentChange={handleContentChange}
+                  onSave={handleSave}
+                  onCursorPositionChange={handleCursorPositionChange}
+                  onEditorMount={(editor) => { editorRef.current = editor; }}
+                  theme={theme}
+                />
+              </div>
+
+              {/* Bottom Panel - Terminal */}
+              {terminalPanelOpen && (
+                <ResizablePanel
+                  direction="vertical"
+                  initialSize={panelHeight}
+                  minSize={100}
+                  maxSize={600}
+                  onResize={(newHeight) => setPanelHeight(newHeight)}
+                >
+                  <div className="h-full flex flex-col">
+                    <PanelTabs
+                      activePanel={activePanel}
+                      onPanelChange={setActivePanel}
+                      onClose={() => setTerminalPanelOpen(false)}
+                      problemCount={problems.length}
+                      outputCount={outputEntries.length}
+                    />
+                    <div className="flex-1 overflow-hidden">
+                      {activePanel === "terminal" && (
+                        <div className="h-full flex flex-col">
+                          <TerminalTabs
+                            terminals={terminals}
+                            activeTerminalId={activeTerminalId}
+                            onTabClick={handleTerminalTabClick}
+                            onTabClose={handleTerminalTabClose}
+                            onNewTerminal={handleNewTerminal}
+                          />
+                          <div className="flex-1">
+                            <TerminalPanel
+                              projectName={currentProjectId}
+                              onClose={() => setTerminalPanelOpen(false)}
+                            />
+                          </div>
+                        </div>
+                      )}
+                      {activePanel === "problems" && (
+                        <ProblemsPanel
+                          problems={problems}
+                          onProblemClick={handleProblemClick}
+                          onClear={handleClearProblems}
+                          onRefresh={refreshDiagnostics}
+                        />
+                      )}
+                      {activePanel === "output" && (
+                        <OutputPanel
+                          entries={outputEntries}
+                          onClear={handleClearOutput}
+                        />
+                      )}
+                    </div>
+                  </div>
+                </ResizablePanel>
+              )}
+            </div>
+          </div>
+
+          {/* AI Chat Panel */}
+          {chatPanelOpen && (
+            <ResizablePanel
+              direction="horizontal"
+              initialSize={chatPanelWidth}
+              minSize={280}
+              maxSize={600}
+              onResize={(newWidth) => setChatPanelWidth(newWidth)}
+            >
+              <div className="h-full bg-background border-l border-border flex flex-col flex-shrink-0">
+                <div className="px-3 py-2 bg-sidebar border-b border-border flex items-center justify-between">
+                  <div className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                    <MessageCircle className="w-3.5 h-3.5" />
+                    AI Assistant
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => setThreadListVisible(v => !v)}
+                      title="Chat History"
+                      className={`p-0.5 rounded transition-colors text-muted-foreground hover:text-foreground ${threadListVisible ? 'bg-accent text-foreground' : ''}`}
+                    >
+                      <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                    </button>
+                    <button
+                      onClick={async () => {
+                        try {
+                          const result = await api.threads.create(currentProjectId);
+                          setThreadId(result.thread.id);
+                          setMessages([]);
+                          setThreadListVisible(false);
+                          const updated = await api.threads.list(currentProjectId);
+                          setAllThreads(updated.threads || []);
+                        } catch {}
+                      }}
+                      title="New Chat"
+                      className="p-0.5 rounded text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={() => setChatPanelOpen(false)}
+                      className="text-muted-foreground hover:text-foreground transition-colors p-0.5"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+
+                {threadListVisible && allThreads.length > 0 && (
+                  <div className="border-b border-border bg-sidebar max-h-48 overflow-y-auto">
+                    {allThreads
+                      .slice()
+                      .sort((a, b) => new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime())
+                      .map(t => (
+                        <button
+                          key={t.id}
+                          onClick={async () => {
+                            setThreadId(t.id);
+                            setThreadListVisible(false);
+                            try {
+                              const msgs = await api.threads.messages(t.id, 0, 100);
+                              setMessages(toChatMessages(msgs.items));
+                            } catch {}
+                          }}
+                          className={`w-full text-left px-3 py-2 text-[11px] hover:bg-accent transition-colors flex items-center gap-2 ${t.id === threadId ? 'bg-accent/50 text-foreground' : 'text-muted-foreground'}`}
+                        >
+                          <MessageCircle className="w-3 h-3 flex-shrink-0" />
+                          <span className="flex-1 truncate">{t.title || `Chat ${t.id?.slice(-6)}`}</span>
+                          {t.id === threadId && <span className="text-[9px] text-primary">active</span>}
+                        </button>
+                      ))}
+                  </div>
+                )}
+
+                <div className="flex-1 overflow-auto p-3">
+                  {messages.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center h-full text-muted-foreground text-xs gap-2">
+                      <MessageCircle className="w-8 h-8 opacity-30" />
+                      <p className="font-medium">AI Code Assistant</p>
+                      <p className="text-[11px] text-center opacity-70">Ask me to write, fix, or explain code.<br/>Use Ctrl+I to edit selected code inline.</p>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col gap-3">
+                      {messages.map((msg) => (
+                        <ChatMessageComponent key={msg.id} message={msg as any} isSelfUpgrade={isSelfUpgrade} projectName={currentProjectId} onApprovalResolved={() => {}} />
+                      ))}
+                      {isStreaming && (
+                        <div className="flex items-center gap-1.5 text-primary text-[10px]">
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                          Thinking...
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
+                <div className="border-t border-border">
+                  <ChatInput placeholder="Ask about your code… (Ctrl+I for inline edit)" onSend={handleSend} isGenerating={isStreaming} onStop={() => {}} />
+                </div>
               </div>
-            )}
-          </div>
+            </ResizablePanel>
+          )}
+
+          {/* Floating Reopen Chat Button */}
+          {!chatPanelOpen && (
+            <button
+              onClick={() => setChatPanelOpen(true)}
+              className="fixed right-4 bottom-20 p-3 bg-primary text-primary-foreground rounded-full shadow-lg hover:opacity-90 transition-all z-50"
+              title="Open AI Assistant"
+            >
+              <MessageCircle className="w-5 h-5" />
+            </button>
+          )}
+        </div>
+
+        {/* Status Bar */}
+        <StatusBar
+          currentFile={activeFilePath}
+          lineNumber={cursorPosition.line}
+          columnNumber={cursorPosition.column}
+          branch={gitBranch}
+          onBranchClick={() => setBranchSwitcherVisible(true)}
+          onLanguageClick={() => toast.info('Language mode selector - monaco editor handles syntax highlighting automatically')}
+          onGitHubClick={() => toast.info('GitHub integration available in Source Control panel')}
+        />
+
+        {/* Overlay Components */}
+        {commandPaletteOpen && (
+          <CommandPalette
+            onClose={() => setCommandPaletteOpen(false)}
+          />
         )}
 
-        {!aiPanelOpen && (
-          <button onClick={() => setAiPanelOpen(true)}
-            className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-lg border border-border bg-background hover:bg-secondary text-muted-foreground transition-colors z-10">
-            <MessageSquare className="w-4 h-4" />
-          </button>
+        {quickOpenVisible && (
+          <QuickOpen
+            files={allFilePaths}
+            onClose={() => setQuickOpenVisible(false)}
+            onSelectFile={(path) => {
+              setQuickOpenVisible(false);
+              handleFileClick(path);
+            }}
+          />
+        )}
+
+        {goToLineVisible && (
+          <GoToLine
+            onClose={() => setGoToLineVisible(false)}
+            onGoToLine={(lineNumber: number) => {
+              setGoToLineVisible(false);
+              if (editorRef.current) {
+                editorRef.current.revealLineInCenter(lineNumber);
+                editorRef.current.setPosition({ lineNumber, column: 1 });
+                editorRef.current.focus();
+              }
+            }}
+            totalLines={editorRef.current?.getModel()?.getLineCount() || 1000}
+          />
+        )}
+
+        {symbolSearchVisible && activeFilePath && (
+          <SymbolSearch
+            onClose={() => setSymbolSearchVisible(false)}
+            onGoToSymbol={(lineNumber: number) => {
+              setSymbolSearchVisible(false);
+              if (editorRef.current) {
+                editorRef.current.revealLineInCenter(lineNumber);
+                editorRef.current.setPosition({ lineNumber, column: 1 });
+                editorRef.current.focus();
+              }
+            }}
+            fileContent={openFiles.find(f => f.path === activeFilePath)?.content || ''}
+          />
+        )}
+
+        {branchSwitcherVisible && (
+          <BranchSwitcher
+            projectName={currentProjectId}
+            currentBranch={gitBranch}
+            onClose={() => setBranchSwitcherVisible(false)}
+            onBranchSwitch={(branch) => {
+              setGitBranch(branch);
+            }}
+          />
         )}
       </div>
-    </div>
+    </MenuActionsProvider>
   );
 }

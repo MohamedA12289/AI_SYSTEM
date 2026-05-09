@@ -27,8 +27,39 @@ function cleanDisplayText(input?: string) {
     .trim();
 }
 
+function stripSystemPromptArtifacts(content: string): string {
+  if (!content) return content;
+  let text = content;
+
+  // Pull out the user's own message if framed with [USER MESSAGE]:
+  const userMsgMatch = text.match(/\[USER MESSAGE\]:\s*([\s\S]*?)(?:\n\n\[(?:AVAILABLE FILES IN PROJECT|Project File Contents|FILE CONTENT|CONTEXT|ATTACHED FILE)[\s\S]*)?$/);
+  if (userMsgMatch) {
+    text = userMsgMatch[1];
+  }
+
+  // Inline edit prompts: keep just the Instruction line.
+  const inlineMatch = text.match(/\[INLINE EDIT REQUEST\][\s\S]*?Instruction:\s*([\s\S]*?)(?:\n\nReplace|\n\nRespond|$)/);
+  if (inlineMatch) {
+    text = `(inline edit) ${inlineMatch[1].trim()}`;
+  }
+
+  // Strip remaining bracketed system blocks and any code fences that follow them.
+  text = text
+    .replace(/\[CONTEXT:[^\]]*\][^\n]*\n?/g, "")
+    .replace(/\[FILE CONTENT OF [^\]]+\]:[\s\S]*?```[\s\S]*?```\s*/g, "")
+    .replace(/\[Project File Contents\][\s\S]*$/g, "")
+    .replace(/\[AVAILABLE FILES IN PROJECT\]:[^\n]*\n?/g, "")
+    .replace(/\[ATTACHED FILE:[^\]]+\]\s*/g, "")
+    .replace(/^\s*\n+/, "")
+    .replace(/\n{3,}/g, "\n\n");
+
+  return text.trim() || content.trim();
+}
+
 export function ChatMessage({ message, isSelfUpgrade, projectName, onApprovalResolved }: Props) {
-  const safeMessage = { ...message, content: cleanDisplayText(message.content) };
+  const rawContent = cleanDisplayText(message.content);
+  const displayContent = message.role === "user" ? stripSystemPromptArtifacts(rawContent) : rawContent;
+  const safeMessage = { ...message, content: displayContent };
 
   if (safeMessage.role === "approval") {
     return <ApprovalCard message={safeMessage} isSelfUpgrade={isSelfUpgrade} projectName={projectName} onResolved={onApprovalResolved} />;

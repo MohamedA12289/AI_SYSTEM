@@ -38,12 +38,15 @@
     --warning-foreground: 0 0% 100%;
     --success: 145 63% 42%;
     --success-foreground: 0 0% 100%;
-    --info: 210 60% 50%;
+    --info: 0 0% 40%;
     --info-foreground: 0 0% 100%;
     --surface: 0 0% 95%;
     --surface-foreground: 0 0% 15%;
     --panel: 0 0% 99%;
     --panel-foreground: 0 0% 15%;
+    --activity-bar: 0 0% 96%;
+    --activity-bar-foreground: 0 0% 40%;
+    --activity-bar-active: 0 0% 15%;
   }
 
   .dark {
@@ -78,12 +81,15 @@
     --warning-foreground: 0 0% 100%;
     --success: 145 63% 42%;
     --success-foreground: 0 0% 100%;
-    --info: 210 60% 50%;
+    --info: 0 0% 60%;
     --info-foreground: 0 0% 100%;
     --surface: 0 0% 11%;
     --surface-foreground: 0 0% 80%;
     --panel: 0 0% 9%;
     --panel-foreground: 0 0% 88%;
+    --activity-bar: 0 0% 7%;
+    --activity-bar-foreground: 0 0% 55%;
+    --activity-bar-active: 0 0% 88%;
   }
 }
 
@@ -97,12 +103,39 @@
 }
 
 @layer utilities {
+  /* Global scrollbar styling - applies to ALL scrollable elements */
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background-color: hsl(var(--border));
+    border-radius: 5px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: hsl(var(--muted-foreground) / 0.6);
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--border)) transparent;
+  }
+
   .scrollbar-thin {
     scrollbar-width: thin;
     scrollbar-color: hsl(var(--border)) transparent;
   }
   .scrollbar-thin::-webkit-scrollbar {
-    width: 5px;
+    width: 6px;
+    height: 6px;
   }
   .scrollbar-thin::-webkit-scrollbar-track {
     background: transparent;
@@ -113,5 +146,21 @@
   }
   .scrollbar-thin::-webkit-scrollbar-thumb:hover {
     background-color: hsl(var(--muted-foreground));
+  }
+
+  /* Remove default focus rings on buttons that already have :focus-visible */
+  button:focus { outline: none; }
+
+  /* Smooth panel borders */
+  .panel-border {
+    border-color: hsl(var(--border));
+  }
+
+  /* Subtle hover for clickable rows */
+  .hover-row {
+    transition: background-color 120ms ease;
+  }
+  .hover-row:hover {
+    background-color: hsl(var(--accent) / 0.5);
   }
 }

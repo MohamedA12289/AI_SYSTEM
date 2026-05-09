@@ -1,17 +1,23 @@
 {
-  "name": "cubos-frontend",
+  "name": "cubos",
+  "productName": "CubOS",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
+  "description": "CubOS — AI-powered desktop coding assistant",
+  "author": "CubOS",
+  "main": "electron/main.cjs",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 8080",
-    "build": "vite build",
+    "build": "tsc -b && vite build",
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
     "preview": "vite preview --host 0.0.0.0 --port 8080",
     "test": "vitest run",
     "test:watch": "vitest",
-    "dev:desktop": "concurrently -k \"cross-env CUBOS_RENDERER_URL=http://localhost:8080 vite --host 0.0.0.0 --port 8080\" \"wait-on http://localhost:8080 && cross-env CUBOS_RENDERER_URL=http://localhost:8080 electron electron/main.cjs\""
+    "dev:desktop": "concurrently -k \"cross-env CUBOS_RENDERER_URL=http://localhost:8080 vite --host 0.0.0.0 --port 8080\" \"wait-on http://localhost:8080 && cross-env CUBOS_RENDERER_URL=http://localhost:8080 electron electron/main.cjs\"",
+    "package:win": "npm run build && electron-builder --win --x64",
+    "package:win:dir": "npm run build && electron-builder --win --x64 --dir"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
@@ -63,6 +69,8 @@
     "tailwind-merge": "^2.6.0",
     "tailwindcss-animate": "^1.0.7",
     "vaul": "^0.9.9",
+    "xterm": "^5.3.0",
+    "xterm-addon-fit": "^0.8.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {
@@ -79,6 +87,7 @@
     "concurrently": "^9.2.1",
     "cross-env": "^10.1.0",
     "electron": "^41.1.1",
+    "electron-builder": "^25.1.8",
     "eslint": "^9.32.0",
     "eslint-plugin-react-hooks": "^5.2.0",
     "eslint-plugin-react-refresh": "^0.4.20",
@@ -92,5 +101,56 @@
     "vite": "^5.4.19",
     "vitest": "^3.2.4",
     "wait-on": "^9.0.4"
+  },
+  "build": {
+    "appId": "com.cubos.desktop",
+    "productName": "CubOS",
+    "copyright": "Copyright © 2026 CubOS",
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../../dist-backend/cubos_backend",
+        "to": "cubos_backend",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "public/icon.png",
+      "signingHashAlgorithms": null,
+      "forceCodeSigning": false,
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "CubOS"
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "public/icon.icns"
+    },
+    "linux": {
+      "target": "AppImage",
+      "icon": "public/icon.png"
+    }
   }
 }

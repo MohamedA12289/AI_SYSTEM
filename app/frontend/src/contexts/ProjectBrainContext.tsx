@@ -50,6 +50,7 @@ interface SessionSnapshot {
   activeTabPath: string | null;
   selectedPaths: string[];
   codeAiMessages: AiMessage[];
+  activeThreadId: string | null;
 }
 
 const sessionRegistry = new Map<string, SessionSnapshot>();
@@ -59,8 +60,28 @@ export function getSessionAiMessages(projectId: string): AiMessage[] {
 }
 
 export function setSessionAiMessages(projectId: string, msgs: AiMessage[]) {
-  const snap = sessionRegistry.get(projectId) ?? { openTabs: [], activeTabPath: null, selectedPaths: [], codeAiMessages: [] };
+  const snap = sessionRegistry.get(projectId) ?? { openTabs: [], activeTabPath: null, selectedPaths: [], codeAiMessages: [], activeThreadId: null };
   sessionRegistry.set(projectId, { ...snap, codeAiMessages: msgs });
+}
+
+const ACTIVE_THREAD_KEY = (pid: string) => `cubos.activeThread.${pid}`;
+
+export function getActiveThreadId(projectId: string): string | null {
+  const snap = sessionRegistry.get(projectId);
+  if (snap?.activeThreadId) return snap.activeThreadId;
+  try {
+    const ls = localStorage.getItem(ACTIVE_THREAD_KEY(projectId));
+    return ls || null;
+  } catch { return null; }
+}
+
+export function setActiveThreadId(projectId: string, threadId: string | null) {
+  const snap = sessionRegistry.get(projectId) ?? { openTabs: [], activeTabPath: null, selectedPaths: [], codeAiMessages: [], activeThreadId: null };
+  sessionRegistry.set(projectId, { ...snap, activeThreadId: threadId });
+  try {
+    if (threadId) localStorage.setItem(ACTIVE_THREAD_KEY(projectId), threadId);
+    else localStorage.removeItem(ACTIVE_THREAD_KEY(projectId));
+  } catch {}
 }
 
 export interface ProjectBrainState {
@@ -121,6 +142,7 @@ export function ProjectBrainProvider({ projectId, children }: { projectId: strin
       activeTabPath,
       selectedPaths,
       codeAiMessages: snap?.codeAiMessages ?? [],
+      activeThreadId: snap?.activeThreadId ?? null,
     });
   }, [projectId, openTabs, activeTabPath, selectedPaths]);
 

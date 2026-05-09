@@ -2,7 +2,28 @@
 import os
 from pathlib import Path
 
-AI_SYSTEM_BASE_PATH = Path(r"D:\AI_SYSTEM")
+
+def _resolve_base_path() -> Path:
+    # 1. Explicit override (dev or advanced user)
+    env_override = os.environ.get("CUBOS_BASE_PATH", "").strip()
+    if env_override:
+        return Path(env_override)
+
+    # 2. Always use per-user data directory (consistent across dev and packaged)
+    appdata = os.environ.get("APPDATA", "").strip()
+    if appdata:
+        return Path(appdata) / "CubOS"
+
+    # 3. Linux/macOS fallback
+    home = os.environ.get("HOME", "").strip()
+    if home:
+        return Path(home) / ".cubos"
+
+    # 4. Last-resort dev fallback (repo root)
+    return Path(__file__).resolve().parent.parent.parent
+
+
+AI_SYSTEM_BASE_PATH = _resolve_base_path()
 SECRETS_BASE_PATH = AI_SYSTEM_BASE_PATH / "secrets"
 ENV_FILE_PATH = SECRETS_BASE_PATH / ".env"
 
@@ -42,6 +63,41 @@ GROQ_AVAILABLE_MODELS = [
     "llama-3.3-70b-versatile",
     "llama-3.1-8b-instant",
     "moonshotai/kimi-k2-instruct",
+]
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini"
+OPENAI_AVAILABLE_MODELS = [
+    "gpt-4o",
+    "gpt-4o-mini",
+    "gpt-4-turbo",
+    "gpt-4.1",
+    "gpt-4.1-mini",
+    "o1-mini",
+    "o3-mini",
+]
+
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-latest").strip() or "claude-3-5-sonnet-latest"
+ANTHROPIC_AVAILABLE_MODELS = [
+    "claude-3-5-sonnet-latest",
+    "claude-3-5-haiku-latest",
+    "claude-3-opus-latest",
+    "claude-sonnet-4-5",
+    "claude-opus-4-5",
+]
+
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "anthropic/claude-3.5-sonnet").strip() or "anthropic/claude-3.5-sonnet"
+OPENROUTER_AVAILABLE_MODELS = [
+    "anthropic/claude-3.5-sonnet",
+    "anthropic/claude-3-opus",
+    "openai/gpt-4o",
+    "openai/gpt-4o-mini",
+    "google/gemini-2.0-flash-exp",
+    "meta-llama/llama-3.3-70b-instruct",
+    "deepseek/deepseek-chat",
+    "qwen/qwen-2.5-coder-32b-instruct",
 ]
 
 MEMORY_BASE_PATH = AI_SYSTEM_BASE_PATH / "memory" / "projects"

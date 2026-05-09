@@ -3,8 +3,6 @@ import shutil
 import tempfile
 import subprocess
 
-import whisper
-
 from file_tools import resolve_safe_path
 
 _ALLOWED_AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".flac", ".aac", ".ogg", ".wma", ".webm"}
@@ -13,6 +11,7 @@ _MODEL_CACHE: dict[str, object] = {}
 
 
 def _load_model(model_name: str):
+    import whisper  # lazy import — torch/whisper not bundled in packaged build
     clean_name = (model_name or "base").strip() or "base"
     if clean_name not in _MODEL_CACHE:
         _MODEL_CACHE[clean_name] = whisper.load_model(clean_name)

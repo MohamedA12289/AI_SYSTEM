@@ -17,6 +17,8 @@ from snapshots import create_snapshot
 from memory import read_tasks, read_notes, read_memory_entries, write_tasks, write_notes, write_memory_entries
 from chat_store import append_message
 from diff_tools import build_unified_diff
+from file_extractor import extract_project_path
+from edit_tools import edit_file, preview_edit_file
 
 TOOL_SCHEMA_TEXT = """
 Output exactly one JSON object. No markdown, no code fences, no explanation text.
@@ -26,8 +28,11 @@ Action schemas:
 {"action": "respond", "args": {"message": "your reply text"}}
 {"action": "list_files", "args": {"subpath": ""}}
 {"action": "read_file", "args": {"path": "relative/path.py"}}
+{"action": "extract_file", "args": {"path": "relative/path.pdf"}}
+{"action": "extract_folder", "args": {"path": "subfolder"}}
 {"action": "write_file", "args": {"path": "relative/path.py", "content": "file content here"}}
 {"action": "overwrite_file", "args": {"path": "relative/path.py", "content": "new content here"}}
+{"action": "edit_file", "args": {"path": "relative/path.py", "edits": [{"op": "replace", "anchor": "def foo():\\n    pass", "replacement": "def foo():\\n    return 1"}, {"op": "insert_after", "anchor": "import os", "content": "\\nimport sys"}, {"op": "delete", "anchor": "old_block_here"}]}}
 {"action": "run_command", "args": {"command": ["python", "script.py"], "timeout_seconds": 30}}
 {"action": "fetch_url", "args": {"url": "https://example.com", "timeout_seconds": 20}}
 {"action": "web_search", "args": {"query": "search term", "max_results": 5}}
@@ -35,7 +40,35 @@ Action schemas:
 {"action": "add_note", "args": {"content": "note text"}}
 {"action": "add_memory", "args": {"key": "key_name", "value": "value text", "pinned": false}}
 {"action": "create_snapshot", "args": {"note": "snapshot description"}}
+{"action": "git", "args": {"op": "status"}}
+{"action": "git", "args": {"op": "commit", "message": "commit message", "paths": ["optional", "list"]}}
+{"action": "git", "args": {"op": "branch", "name": "feature/x", "checkout": true}}
+{"action": "git", "args": {"op": "diff", "staged": false, "path": "optional/path"}}
+{"action": "git", "args": {"op": "stash", "message": "wip"}}
+{"action": "git", "args": {"op": "log", "limit": 20}}
+{"action": "plan", "args": {"op": "create", "title": "Plan title", "items": ["step 1", "step 2"]}}
+{"action": "plan", "args": {"op": "list"}}
+{"action": "plan", "args": {"op": "set_status", "item_id": "...", "status": "done"}}
+{"action": "pr", "args": {"op": "describe", "staged": false}}
+{"action": "pr", "args": {"op": "review", "diff": "<unified diff>"}}
+{"action": "pr", "args": {"op": "improve", "staged": true}}
+{"action": "pr", "args": {"op": "ask", "question": "why was X changed?", "diff": "..."}}
+{"action": "lsp", "args": {"op": "definition", "path": "src/x.py", "line": 10, "character": 4}}
+{"action": "lsp", "args": {"op": "references", "path": "src/x.ts", "line": 3, "character": 8}}
+{"action": "lsp", "args": {"op": "diagnostics", "path": "src/x.py"}}
+{"action": "lsp", "args": {"op": "format", "path": "src/x.py"}}
+{"action": "subagent", "args": {"task": "summarise foo.py", "role": "developer"}}
+{"action": "mcp", "args": {"op": "list_servers"}}
+{"action": "mcp", "args": {"op": "list_tools", "server": "fs"}}
+{"action": "mcp", "args": {"op": "call", "server": "fs", "tool": "read_file", "arguments": {"path": "..."}}}
+{"action": "skill", "args": {"op": "list"}}
+{"action": "skill", "args": {"op": "resolve", "name": "frontend"}}
+{"action": "browser", "args": {"op": "browse", "url": "https://example.com"}}
+{"action": "browser", "args": {"op": "screenshot", "url": "https://example.com"}}
 
+Use extract_file for non-text files (PDF, DOCX, PPTX, XLSX, CSV, images, HTML, EPUB, archives, audio/video).
+Use read_file for plain text/code files.
+Prefer edit_file over overwrite_file for small targeted changes - it is safer because each anchor must match uniquely.
 Choose the most appropriate action for the user request.
 If unsure, use respond.
 """
@@ -108,6 +141,20 @@ def execute_agent_action(project_name: str, action_payload: dict, allow_writes: 
         log_activity(project_name, "Read file", path, type="file")
         return {"executed": True, "action": "read_file", "scope": get_project_scope_info(project_name), "result": trim_large_text(result)}
 
+    if action == "extract_file":
+        path = _coerce_path_from_args(args)
+        max_chars = int(args.get("max_chars") or 60000)
+        result = extract_project_path(project_name, path, max_chars=max_chars)
+        log_activity(project_name, "Extracted file", path, type="file")
+        return {"executed": True, "action": "extract_file", "scope": get_project_scope_info(project_name), "result": trim_large_text(result)}
+
+    if action == "extract_folder":
+        path = _coerce_path_from_args(args)
+        max_files = int(args.get("max_files") or 200)
+        result = extract_project_path(project_name, path, max_files=max_files)
+        log_activity(project_name, "Extracted folder", path, type="file")
+        return {"executed": True, "action": "extract_folder", "scope": get_project_scope_info(project_name), "result": trim_large_text(result)}
+
     if action in {"write_file", "overwrite_file"}:
         path = _coerce_path_from_args(args)
         content = _normalize_file_content(args)
@@ -125,6 +172,46 @@ def execute_agent_action(project_name: str, action_payload: dict, allow_writes: 
         log_activity(project_name, "File changed", f"{action}: {path}", type="file", metadata={"path": path})
         append_message(project_name, "system", f"{action} applied to {path}", message_type="tool_result", mirror_legacy=False)
         return {"executed": True, "action": action, "scope": get_project_scope_info(project_name), "result": trim_large_text(result)}
+
+    if action == "edit_file":
+        path = _coerce_path_from_args(args)
+        edits = args.get("edits") or []
+        if not isinstance(edits, list) or not edits:
+            raise ValueError("edit_file requires a non-empty 'edits' list.")
+        if not allow_writes:
+            try:
+                preview = preview_edit_file(project_name, path, edits)
+            except Exception as e:
+                return {"executed": False, "action": "edit_file", "error": str(e)}
+            return _approval_payload(project_name, action, {"path": path, "edits": edits, "diff": preview.get("diff", "")}, f"edit_file {path}")
+        result = edit_file(project_name, path, edits)
+        log_activity(project_name, "File edited", f"edit_file: {path}", type="file", metadata={"path": path, "ops": result.get("applied")})
+        append_message(project_name, "system", f"edit_file applied to {path}", message_type="tool_result", mirror_legacy=False)
+        return {"executed": True, "action": "edit_file", "scope": get_project_scope_info(project_name), "result": trim_large_text(result)}
+
+    if action == "git":
+        from git_tools import run_git_op
+        op = str(args.get("op", "")).strip().lower()
+        # Mutating ops require allow_writes; read-only ops do not.
+        mutating = op in {"commit", "branch", "stash", "checkout", "reset"}
+        if mutating and not allow_writes:
+            return _approval_payload(project_name, action, args, f"git {op}")
+        try:
+            result = run_git_op(project_name, op, args)
+        except Exception as e:
+            return {"executed": False, "action": "git", "error": str(e)}
+        log_activity(project_name, "Git op", f"git {op}", type="git", metadata={"op": op})
+        return {"executed": True, "action": "git", "result": trim_large_text(result)}
+
+    if action == "plan":
+        from plan_store import run_plan_op
+        op = str(args.get("op", "")).strip().lower()
+        try:
+            result = run_plan_op(project_name, op, args)
+        except Exception as e:
+            return {"executed": False, "action": "plan", "error": str(e)}
+        log_activity(project_name, "Plan op", f"plan {op}", type="plan", metadata={"op": op})
+        return {"executed": True, "action": "plan", "result": trim_large_text(result)}
 
     if action == "run_command":
         command = args.get("command", [])
@@ -234,5 +321,115 @@ def execute_agent_action(project_name: str, action_payload: dict, allow_writes: 
         log_activity(project_name, "Test run", args.get("test_id", ""), type="test")
         return {"executed": True, "action": "run_test", "result": result}
 
-    raise ValueError(f"Unknown action: {action}")
+    if action == "pr":
+        from pr_tools import run_pr_op
+        op = str(args.get("op", "")).strip().lower()
+        try:
+            result = run_pr_op(project_name, op, args)
+        except Exception as e:
+            return {"executed": False, "action": "pr", "error": str(e)}
+        log_activity(project_name, "PR op", f"pr {op}", type="pr", metadata={"op": op})
+        return {"executed": True, "action": "pr", "result": trim_large_text(result)}
 
+    if action == "lsp":
+        from lsp_client import run_lsp_op
+        op = str(args.get("op", "")).strip().lower()
+        try:
+            result = run_lsp_op(project_name, op, args)
+        except Exception as e:
+            return {"executed": False, "action": "lsp", "error": str(e)}
+        log_activity(project_name, "LSP op", f"lsp {op}", type="lsp", metadata={"op": op})
+        return {"executed": True, "action": "lsp", "result": trim_large_text(result)}
+
+    if action == "subagent":
+        from subagent import run_subagent_op
+        op = str(args.get("op", "run")).strip().lower()
+        try:
+            result = run_subagent_op(project_name, op, args)
+        except Exception as e:
+            return {"executed": False, "action": "subagent", "error": str(e)}
+        log_activity(project_name, "Subagent", f"subagent {op}", type="subagent", metadata={"op": op})
+        return {"executed": True, "action": "subagent", "result": trim_large_text(result)}
+
+    if action == "mcp":
+        from mcp_client import run_mcp_op
+        op = str(args.get("op", "")).strip().lower()
+        # call ops are mutating from a security standpoint
+        if op in {"call", "call_tool", "invoke"} and not allow_commands:
+            return _approval_payload(project_name, action, args, f"mcp {op} {args.get('server','')}.{args.get('tool','')}")
+        try:
+            result = run_mcp_op(project_name, op, args)
+        except Exception as e:
+            return {"executed": False, "action": "mcp", "error": str(e)}
+        log_activity(project_name, "MCP op", f"mcp {op}", type="mcp", metadata={"op": op})
+        return {"executed": True, "action": "mcp", "result": trim_large_text(result)}
+
+    if action == "skill":
+        from skills_loader import run_skill_op
+        op = str(args.get("op", "list")).strip().lower()
+        try:
+            result = run_skill_op(project_name, op, args)
+        except Exception as e:
+            return {"executed": False, "action": "skill", "error": str(e)}
+        return {"executed": True, "action": "skill", "result": trim_large_text(result)}
+
+    if action == "browser":
+        from browser_tools import run_browser_op
+        op = str(args.get("op", "")).strip().lower()
+        try:
+            result = run_browser_op(project_name, op, args)
+        except Exception as e:
+            return {"executed": False, "action": "browser", "error": str(e)}
+        log_activity(project_name, "Browser op", f"browser {op}", type="browser", metadata={"op": op, "url": args.get("url", "")})
+        return {"executed": True, "action": "browser", "result": trim_large_text(result)}
+
+    if action == "voice":
+        from voice_tools import run_voice_op
+        op = str(args.get("op", "")).strip().lower()
+        try:
+            result = run_voice_op(project_name, op, args)
+        except Exception as e:
+            return {"executed": False, "action": "voice", "error": str(e)}
+        log_activity(project_name, "Voice op", f"voice {op}", type="voice", metadata={"op": op})
+        return {"executed": True, "action": "voice", "result": trim_large_text(result)}
+
+    if action == "vision":
+        from vision_tools import run_vision_op
+        op = str(args.get("op", "ask")).strip().lower()
+        try:
+            result = run_vision_op(project_name, op, args)
+        except Exception as e:
+            return {"executed": False, "action": "vision", "error": str(e)}
+        log_activity(project_name, "Vision op", f"vision {op}", type="vision", metadata={"op": op})
+        return {"executed": True, "action": "vision", "result": trim_large_text(result)}
+
+    if action == "slash":
+        from slash_commands import run_slash_op
+        op = str(args.get("op", "list")).strip().lower()
+        if op == "run" and not allow_commands:
+            return _approval_payload(project_name, action, args, f"slash run {args.get('name','')}")
+        try:
+            result = run_slash_op(op, **{k: v for k, v in args.items() if k != "op"})
+        except Exception as e:
+            return {"executed": False, "action": "slash", "error": str(e)}
+        return {"executed": True, "action": "slash", "result": trim_large_text(result)}
+
+    if action == "history":
+        from prompt_history import run_history_op
+        op = str(args.get("op", "list")).strip().lower()
+        try:
+            result = run_history_op(op, **{k: v for k, v in args.items() if k != "op"})
+        except Exception as e:
+            return {"executed": False, "action": "history", "error": str(e)}
+        return {"executed": True, "action": "history", "result": trim_large_text(result)}
+
+    if action == "theme":
+        from theme_store import run_theme_op
+        op = str(args.get("op", "list")).strip().lower()
+        try:
+            result = run_theme_op(op, **{k: v for k, v in args.items() if k != "op"})
+        except Exception as e:
+            return {"executed": False, "action": "theme", "error": str(e)}
+        return {"executed": True, "action": "theme", "result": trim_large_text(result)}
+
+    raise ValueError(f"Unknown action: {action}")

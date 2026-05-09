@@ -1,6 +1,8 @@
 
 from datetime import datetime, timezone
 import json
+import re
+from pathlib import Path
 
 from config import (
     CONFIGS_BASE_PATH,
@@ -30,10 +32,45 @@ def _self_upgrade_entry() -> dict:
         "created_at": _now_iso(),
     }
 
+def _get_legacy_registry_paths() -> list[Path]:
+    """Return candidate legacy registry paths from repo-root configs/."""
+    candidates = []
+    script_dir = Path(__file__).resolve().parent
+    repo_root = script_dir.parent.parent
+    legacy = repo_root / "configs" / "projects_registry.json"
+    if legacy.exists() and legacy.resolve() != PROJECTS_REGISTRY_PATH.resolve():
+        candidates.append(legacy)
+    return candidates
+
+def _import_legacy_projects(current_projects: list[dict]) -> list[dict]:
+    """Import projects from legacy registry files that aren't already present."""
+    existing_names = {p.get("project_name") for p in current_projects if isinstance(p, dict)}
+    for legacy_path in _get_legacy_registry_paths():
+        try:
+            legacy_data = json.loads(legacy_path.read_text(encoding="utf-8"))
+            legacy_projects = legacy_data.get("projects", []) if isinstance(legacy_data, dict) else []
+            for entry in legacy_projects:
+                if not isinstance(entry, dict):
+                    continue
+                name = entry.get("project_name")
+                if not name or name == SELF_UPGRADE_PROJECT_NAME:
+                    continue
+                if name in existing_names:
+                    continue
+                workspace = entry.get("workspace_root", "")
+                if workspace and not Path(workspace).exists():
+                    continue
+                current_projects.append(entry)
+                existing_names.add(name)
+        except Exception:
+            pass
+    return current_projects
+
 def ensure_projects_registry() -> None:
     CONFIGS_BASE_PATH.mkdir(parents=True, exist_ok=True)
     if not PROJECTS_REGISTRY_PATH.exists():
-        data = {"projects": [_self_upgrade_entry()]}
+        data: dict = {"projects": [_self_upgrade_entry()]}
+        _import_legacy_projects(data["projects"])
         PROJECTS_REGISTRY_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
         ensure_project_memory(SELF_UPGRADE_PROJECT_NAME)
         return
@@ -53,6 +90,12 @@ def ensure_projects_registry() -> None:
     if not has_self_upgrade:
         projects.append(_self_upgrade_entry())
 
+    # One-time migration: import legacy projects if not already done
+    migration_done_flag = CONFIGS_BASE_PATH / ".legacy_import_done"
+    if not migration_done_flag.exists():
+        projects = _import_legacy_projects(projects)
+        migration_done_flag.write_text("1", encoding="utf-8")
+
     data["projects"] = projects
     PROJECTS_REGISTRY_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
     ensure_project_memory(SELF_UPGRADE_PROJECT_NAME)
@@ -70,7 +113,12 @@ def read_projects_registry() -> dict:
     return data
 
 def list_registered_projects() -> dict:
-    return read_projects_registry()
+    data = read_projects_registry()
+    filtered_projects = [
+        p for p in data.get("projects", [])
+        if isinstance(p, dict) and p.get("project_name") != SELF_UPGRADE_PROJECT_NAME
+    ]
+    return {"projects": filtered_projects}
 
 def get_registered_project(project_name: str) -> dict:
     validate_project_name(project_name)
@@ -96,6 +144,24 @@ def create_project(project_name: str, display_name: str | None = None, descripti
     workspace_root.mkdir(parents=True, exist_ok=True)
     memory_root = (MEMORY_BASE_PATH / project_name).resolve()
 
+    try:
+        if not (workspace_root / ".git").exists():
+            import subprocess as _sp
+            _sp.run(["git", "init"], cwd=str(workspace_root), capture_output=True, text=True)
+            gitignore = workspace_root / ".gitignore"
+            if not gitignore.exists():
+                gitignore.write_text(
+                    "node_modules/\n__pycache__/\n.venv/\nvenv/\ndist/\nbuild/\n.next/\n.cache/\n*.pyc\n.DS_Store\n.env\n",
+                    encoding="utf-8",
+                )
+            _sp.run(["git", "add", "-A"], cwd=str(workspace_root), capture_output=True, text=True)
+            _sp.run(
+                ["git", "commit", "-m", "Initial commit", "--allow-empty"],
+                cwd=str(workspace_root), capture_output=True, text=True,
+            )
+    except Exception:
+        pass
+
     entry = {
         "project_name": project_name,
         "display_name": (display_name or project_name).strip() or project_name,
@@ -104,6 +170,49 @@ def create_project(project_name: str, display_name: str | None = None, descripti
         "workspace_root": str(workspace_root),
         "memory_root": str(memory_root),
         "scope_root": str(workspace_root),
+        "archived": False,
+        "created_at": _now_iso(),
+    }
+
+    data = read_projects_registry()
+    data["projects"].append(entry)
+    PROJECTS_REGISTRY_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    return entry
+
+def import_project(path: str, display_name: str | None = None, description: str = "") -> dict:
+    folder_path = Path(path).resolve()
+
+    if not folder_path.exists():
+        raise FileNotFoundError(f"Path does not exist: {path}")
+    if not folder_path.is_dir():
+        raise ValueError(f"Path is not a directory: {path}")
+
+    raw_name = folder_path.name.lower()
+    project_name = re.sub(r'[^a-z0-9]+', '-', raw_name)
+    project_name = project_name.strip('-') or 'project'
+
+    if project_name == SELF_UPGRADE_PROJECT_NAME:
+        raise ValueError(f"'{SELF_UPGRADE_PROJECT_NAME}' is reserved.")
+
+    base_name = project_name
+    counter = 1
+    while _project_exists(project_name):
+        project_name = f"{base_name}-{counter}"
+        counter += 1
+        if counter > 100:
+            raise FileExistsError(base_name)
+
+    ensure_project_memory(project_name)
+    memory_root = (MEMORY_BASE_PATH / project_name).resolve()
+
+    entry = {
+        "project_name": project_name,
+        "display_name": (display_name or folder_path.name).strip() or folder_path.name,
+        "description": str(description or "").strip(),
+        "project_type": "imported",
+        "workspace_root": str(folder_path),
+        "memory_root": str(memory_root),
+        "scope_root": str(folder_path),
         "archived": False,
         "created_at": _now_iso(),
     }

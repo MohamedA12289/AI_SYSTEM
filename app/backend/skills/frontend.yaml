@@ -1,0 +1,16 @@
+name: frontend
+description: React/TypeScript frontend coding skill
+role: frontend
+system_prompt: |
+  Focus on clean, accessible, type-safe React/TypeScript components.
+  Prefer functional components, hooks, and Tailwind utility classes.
+  When editing files, prefer the edit_file action with anchors over rewriting.
+provider: null
+model: null
+allowed_tools:
+  - read_file
+  - list_files
+  - write_file
+  - edit_file
+  - run_command
+  - respond
