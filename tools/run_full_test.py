@@ -170,6 +170,17 @@ def record(name: str, method: str, url: str, status: int, latency_ms: float,
     })
 
 
+def _is_expected_controlled_503(path: str, status: int, body: Any) -> bool:
+    """Some optional integrations use 503 to report intentional unconfigured state."""
+    if status != 503:
+        return False
+    if path != "/api/github/auth/initiate":
+        return False
+    if isinstance(body, dict):
+        return body.get("configured") is False
+    return "not configured" in str(body).lower()
+
+
 # Routes we skip from the auto-sweep because they:
 #   - hang (long-running streams),
 #   - mutate global state catastrophically,
@@ -472,6 +483,7 @@ async def hit_openapi_route(c: httpx.AsyncClient, method: str, raw_path: str,
             body_out: Any = r.json()
         except Exception:
             body_out = r.text[:200]
+        ok = ok or _is_expected_controlled_503(path, r.status_code, body_out)
         record(f"auto:{method} {raw_path}", method, path, r.status_code,
                latency, ok,
                note=("" if ok else "5xx server error"),
@@ -571,10 +583,11 @@ async def hit_frontend_paths(c: httpx.AsyncClient, base: str) -> None:
                 body_out: Any = r.json()
             except Exception:
                 body_out = r.text[:200]
+            ok = ok or _is_expected_controlled_503(path, status, body_out)
             note = ""
             if is_404:
                 note = f"FRONTEND CALLS THIS, BACKEND HAS NO ROUTE ({src})"
-            elif is_5xx:
+            elif is_5xx and not ok:
                 note = f"server error ({src})"
             record(f"fe:{method} {path}", method, path, status,
                    latency, ok, note=note[:180], body=body_out,
@@ -619,24 +632,37 @@ async def ws_terminal_test(base: str) -> None:
     t0 = time.time()
     try:
         async with websockets.connect(ws_url, open_timeout=5, close_timeout=2) as ws:
-            # Wait for any banner / prompt
-            await asyncio.sleep(0.5)
+            first = await asyncio.wait_for(ws.recv(), timeout=3)
             try:
-                while True:
-                    await asyncio.wait_for(ws.recv(), timeout=0.5)
-            except asyncio.TimeoutError:
-                pass
+                first_frame = json.loads(first)
+            except Exception:
+                first_frame = {}
+            if first_frame.get("type") != "ready":
+                record("ws_terminal_ready", "WS", ws_url, 0,
+                       (time.time()-t0)*1000, False,
+                       note=f"first frame was not ready: {str(first)[:120]!r}",
+                       required=True, group="websocket")
+                return
+
+            # Let PTY startup/banner output arrive before sending input.
+            prelude_deadline = time.time() + 3
+            while time.time() < prelude_deadline:
+                try:
+                    await asyncio.wait_for(ws.recv(), timeout=0.3)
+                except asyncio.TimeoutError:
+                    break
             await ws.send(json.dumps({"type": "input", "data": "echo hi\r\n"}))
             got = ""
-            try:
-                for _ in range(20):
+            deadline = time.time() + 8
+            while time.time() < deadline:
+                try:
                     msg = await asyncio.wait_for(ws.recv(), timeout=1.0)
-                    got += str(msg)
-                    if "hi" in got and ("\n" in got or "\r" in got):
-                        break
-            except asyncio.TimeoutError:
-                pass
-            ok = "hi" in got
+                except asyncio.TimeoutError:
+                    continue
+                got += str(msg)
+                if "hi" in got.lower():
+                    break
+            ok = "hi" in got.lower()
             record("ws_terminal_echo", "WS", ws_url, 200 if ok else 0,
                    (time.time()-t0)*1000, ok,
                    note="echo roundtrip" if ok else f"no 'hi' in {got[:120]!r}",
