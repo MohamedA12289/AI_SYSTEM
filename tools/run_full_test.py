@@ -55,6 +55,12 @@ PARAM_STUBS: Dict[str, str] = {
 }
 
 # Body templates by path keyword
+def _nongit_fixture_path() -> str:
+    path = REPO / "workspaces" / "_codex_harness_nongit"
+    path.mkdir(parents=True, exist_ok=True)
+    return str(path)
+
+
 def _default_body(path: str, schema: Optional[dict]) -> Optional[dict]:
     p = path.lower()
     # Try to honor the openapi requestBody schema if it's simple
@@ -84,13 +90,13 @@ def _default_body(path: str, schema: Optional[dict]) -> Optional[dict]:
                 "name": f"_h_clone_{int(time.time())}",
                 "project_path": str(REPO / "workspaces" / "_h_clone")}
     if "commit" in p:
-        return {"message": "harness", "project_path": str(REPO)}
+        return {"message": "harness", "project_path": _nongit_fixture_path()}
     if "stage" in p or "unstage" in p:
-        return {"files": ["README.md"], "project_path": str(REPO)}
+        return {"files": ["README.md"], "project_path": _nongit_fixture_path()}
     if "pull" in p or "push" in p:
-        return {"project_path": str(REPO)}
+        return {"project_path": _nongit_fixture_path()}
     if "set-remote" in p or "remote" in p:
-        return {"project_path": str(REPO), "url": "https://example.com/x.git"}
+        return {"project_path": _nongit_fixture_path(), "url": "https://example.com/x.git"}
     if "/settings" in p and "provider" in p:
         return {"provider": "ollama"}
     if "/settings" in p:
