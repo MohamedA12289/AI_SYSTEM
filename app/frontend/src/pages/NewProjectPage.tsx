@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { FolderPlus, Upload, Link2, X, GitBranch, Loader2 } from "lucide-react";
-import { api, getApiBase } from "@/services/api";
+import { api } from "@/services/api";
 
 interface Props { onProjectCreated?: () => Promise<any>; }
 
@@ -42,26 +42,19 @@ export default function NewProjectPage({ onProjectCreated }: Props) {
         if (!result.canceled && result.filePaths.length > 0) {
           const folderPath = result.filePaths[0];
           setLoading(true);
-          const response = await fetch(`${getApiBase()}/projects/import`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: folderPath, display_name: '', description: '' }),
-          });
-          if (response.ok) {
-            const data = await response.json();
+          try {
+            const data = await api.projects.importExisting({ path: folderPath, display_name: '', description: '' });
             await onProjectCreated?.();
             navigate(`/project/${data.project.project_name}/thread/latest`);
-          } else if (response.status === 409) {
-            const data = await response.json().catch(() => ({}));
-            const projectName = data.detail?.project_name;
+          } catch (error: any) {
+            if (error?.status !== 409) throw error;
+            const projectName = error?.detail?.project_name || error?.body?.project_name;
             await onProjectCreated?.();
             if (projectName) {
               navigate(`/project/${projectName}/thread/latest`);
             } else {
               setError('Project already exists.');
             }
-          } else {
-            setError(`Failed to import folder: ${await response.text()}`);
           }
           setLoading(false);
         }
@@ -78,26 +71,19 @@ export default function NewProjectPage({ onProjectCreated }: Props) {
     if (!browserFolderPath.trim()) return;
     setError(null); setLoading(true);
     try {
-      const response = await fetch(`${getApiBase()}/projects/import`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: browserFolderPath.trim(), display_name: '', description: '' }),
-      });
-      if (response.ok) {
-        const data = await response.json();
+      try {
+        const data = await api.projects.importExisting({ path: browserFolderPath.trim(), display_name: '', description: '' });
         await onProjectCreated?.();
         navigate(`/project/${data.project.project_name}/thread/latest`);
-      } else if (response.status === 409) {
-        const data = await response.json().catch(() => ({}));
-        const projectName = data.detail?.project_name;
+      } catch (error: any) {
+        if (error?.status !== 409) throw error;
+        const projectName = error?.detail?.project_name || error?.body?.project_name;
         await onProjectCreated?.();
         if (projectName) {
           navigate(`/project/${projectName}/thread/latest`);
         } else {
           setError('Project already exists.');
         }
-      } else {
-        setError(`Failed to import folder: ${await response.text()}`);
       }
     } catch (err: any) {
       setError(err?.message || 'Failed to import folder');

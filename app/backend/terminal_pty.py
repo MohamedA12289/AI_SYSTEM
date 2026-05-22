@@ -8,6 +8,7 @@ Falls back to a simple subprocess line-runner if neither is available.
 from __future__ import annotations
 
 import asyncio
+import importlib
 import os
 import sys
 import json
@@ -18,12 +19,21 @@ from typing import Dict, Any
 from fastapi import WebSocket, WebSocketDisconnect
 
 from memory import get_project_path
+from process_utils import with_hidden_subprocess
 from project_registry import get_registered_project
 
 active_terminals: Dict[str, dict] = {}
 
 DEFAULT_COLS = 100
 DEFAULT_ROWS = 30
+
+
+async def _send_json_safe(websocket: WebSocket, payload: dict[str, Any]) -> bool:
+    try:
+        await websocket.send_json(payload)
+        return True
+    except Exception:
+        return False
 
 
 def _resolve_cwd(project_name: str) -> str:
@@ -51,43 +61,49 @@ def _default_shell() -> list[str]:
 
 
 async def _run_winpty(websocket: WebSocket, project_name: str, cwd: str) -> bool:
+    loop = asyncio.get_running_loop()
     try:
-        import winpty  # type: ignore
+        winpty = await loop.run_in_executor(None, importlib.import_module, "winpty")
     except Exception as e:
-        try:
-            await websocket.send_json({
-                "type": "output",
-                "data": f"\x1b[33m[winpty unavailable: {e}; using fallback shell]\x1b[0m\r\n",
-            })
-        except Exception:
-            pass
+        await _send_json_safe(websocket, {
+            "type": "info",
+            "message": "winpty unavailable; using fallback shell",
+            "detail": str(e),
+        })
+        await _send_json_safe(websocket, {
+            "type": "output",
+            "data": f"\x1b[33m[winpty unavailable: {e}; using fallback shell]\x1b[0m\r\n",
+        })
         return False
 
-    loop = asyncio.get_running_loop()
     cols, rows = DEFAULT_COLS, DEFAULT_ROWS
     shell_argv = _default_shell()
     cmdline = subprocess.list2cmdline(shell_argv) if len(shell_argv) > 1 else shell_argv[0]
 
     try:
-        pty_proc = winpty.PTY(cols, rows)
+        pty_proc = await loop.run_in_executor(None, lambda: winpty.PTY(cols, rows))
     except Exception as e:
-        await websocket.send_json({"type": "output", "data": f"\x1b[31mPTY init failed: {e}\x1b[0m\r\n"})
+        await _send_json_safe(websocket, {"type": "error", "message": "PTY init failed", "detail": str(e)})
+        await _send_json_safe(websocket, {"type": "output", "data": f"\x1b[31mPTY init failed: {e}\x1b[0m\r\n"})
         return False
 
     try:
-        pty_proc.spawn(cmdline, cwd=cwd, env=os.environ.copy())
+        await loop.run_in_executor(None, lambda: pty_proc.spawn(cmdline, cwd=cwd))
     except Exception as e:
-        await websocket.send_json({"type": "output", "data": f"\x1b[31mPTY spawn failed: {e}\x1b[0m\r\n"})
-        try: pty_proc.close()
+        await _send_json_safe(websocket, {"type": "error", "message": "PTY spawn failed", "detail": str(e)})
+        await _send_json_safe(websocket, {"type": "output", "data": f"\x1b[31mPTY spawn failed: {e}\x1b[0m\r\n"})
+        try: await loop.run_in_executor(None, pty_proc.close)
         except Exception: pass
         return False
+
+    await _send_json_safe(websocket, {"type": "info", "message": "terminal backend started", "backend": "winpty"})
 
     stop = asyncio.Event()
 
     async def reader():
         while not stop.is_set():
             try:
-                data = await loop.run_in_executor(None, pty_proc.read, 4096)
+                data = await loop.run_in_executor(None, pty_proc.read)
             except Exception:
                 break
             if not data:
@@ -118,8 +134,9 @@ async def _run_winpty(websocket: WebSocket, project_name: str, cwd: str) -> bool
             if t == "input":
                 data = msg.get("data", "")
                 try:
-                    pty_proc.write(data)
-                except Exception:
+                    await loop.run_in_executor(None, pty_proc.write, data)
+                except Exception as e:
+                    await _send_json_safe(websocket, {"type": "error", "message": "PTY write failed", "detail": str(e)})
                     break
             elif t == "resize":
                 try:
@@ -134,7 +151,7 @@ async def _run_winpty(websocket: WebSocket, project_name: str, cwd: str) -> bool
         pass
     finally:
         stop.set()
-        try: pty_proc.close()
+        try: await loop.run_in_executor(None, pty_proc.close)
         except Exception: pass
         try: reader_task.cancel()
         except Exception: pass
@@ -176,6 +193,7 @@ async def _run_unix_pty(websocket: WebSocket, project_name: str, cwd: str) -> bo
             pass
 
     set_size(DEFAULT_COLS, DEFAULT_ROWS)
+    await _send_json_safe(websocket, {"type": "info", "message": "terminal backend started", "backend": "unix-pty"})
     stop = asyncio.Event()
 
     async def reader():
@@ -291,9 +309,7 @@ async def _run_fallback(websocket: WebSocket, project_name: str, cwd: str):
                         continue
                     try:
                         shell_cmd = ["cmd.exe", "/C", command] if sys.platform == "win32" else ["/bin/bash", "-c", command]
-                        extra: dict[str, Any] = {}
-                        if sys.platform == "win32":
-                            extra["creationflags"] = 0x08000000
+                        extra: dict[str, Any] = with_hidden_subprocess({})
                         proc = await asyncio.create_subprocess_exec(
                             *shell_cmd,
                             stdin=asyncio.subprocess.DEVNULL,
@@ -334,10 +350,12 @@ async def handle_terminal_session(websocket: WebSocket, project_name: str):
     cwd = _resolve_cwd(project_name)
     active_terminals[project_name] = {"websocket": websocket, "cwd": cwd}
 
-    try:
-        await websocket.send_json({"type": "output", "data": f"\x1b[1;32mConnected to {project_name}\x1b[0m\r\n"})
-    except Exception:
+    if not await _send_json_safe(
+        websocket,
+        {"type": "ready", "project_name": project_name, "cwd": cwd, "cols": DEFAULT_COLS, "rows": DEFAULT_ROWS},
+    ):
         return
+    await _send_json_safe(websocket, {"type": "output", "data": f"\x1b[1;32mConnected to {project_name}\x1b[0m\r\n"})
 
     handled = False
     try:

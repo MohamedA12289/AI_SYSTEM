@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { getApiBase } from "@/services/api";
+import { getApiBaseAsync } from "@/services/api";
 
 interface CloneRepositoryDialogProps {
   isOpen: boolean;
@@ -37,7 +37,8 @@ export default function CloneRepositoryDialog({ isOpen, onClose }: CloneReposito
     setError(null);
 
     try {
-      const response = await fetch(`${getApiBase()}/api/git/clone`, {
+      const base = await getApiBaseAsync();
+      const response = await fetch(`${base}/api/git/clone`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

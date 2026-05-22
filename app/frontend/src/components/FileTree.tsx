@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import ContextMenu, { ContextMenuItem } from './ContextMenu/ContextMenu';
-import { getApiBase } from '@/services/api';
+import { getApiBaseAsync } from '@/services/api';
 
 interface FileItem {
   name: string;
@@ -119,7 +119,7 @@ function FileTreeItem({
       if (!isExpanded && children.length === 0) {
         setIsLoading(true);
         try {
-          const response = await fetch(`${getApiBase()}/project/${projectName}/files?subpath=${encodeURIComponent(item.path)}`);
+          const response = await fetch(`${await getApiBaseAsync()}/project/${projectName}/files?subpath=${encodeURIComponent(item.path)}`);
           const data = await response.json();
           const items = data.items || [];
 
@@ -163,7 +163,7 @@ function FileTreeItem({
           if (!fileName) return;
           try {
             const filePath = `${item.path}/${fileName}`;
-            const response = await fetch(`${getApiBase()}/project/${projectName}/file/write`, {
+            const response = await fetch(`${await getApiBaseAsync()}/project/${projectName}/file/write`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ path: filePath, content: '' })
@@ -187,7 +187,7 @@ function FileTreeItem({
           if (!folderName) return;
           try {
             const folderPath = `${item.path}/${folderName}`;
-            const response = await fetch(`${getApiBase()}/project/${projectName}/directory`, {
+            const response = await fetch(`${await getApiBaseAsync()}/project/${projectName}/directory`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ path: folderPath })
@@ -216,7 +216,7 @@ function FileTreeItem({
           const pathParts = item.path.split('/');
           pathParts[pathParts.length - 1] = newName;
           const newPath = pathParts.join('/');
-          const response = await fetch(`${getApiBase()}/project/${projectName}/file/move`, {
+          const response = await fetch(`${await getApiBaseAsync()}/project/${projectName}/file/move`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ from: item.path, to: newPath })
@@ -239,7 +239,7 @@ function FileTreeItem({
       onClick: async () => {
         if (!confirm(`Are you sure you want to delete ${item.name}?`)) return;
         try {
-          const response = await fetch(`${getApiBase()}/project/${projectName}/file?path=${encodeURIComponent(item.path)}`, {
+          const response = await fetch(`${await getApiBaseAsync()}/project/${projectName}/file?path=${encodeURIComponent(item.path)}`, {
             method: 'DELETE'
           });
           if (response.ok) {
@@ -344,7 +344,7 @@ export default function FileTree({ projectName, onFileClick, refreshKey, onRefre
       setIsLoading(true);
       setError(null);
       try {
-        const response = await fetch(`${getApiBase()}/project/${projectName}/files`);
+        const response = await fetch(`${await getApiBaseAsync()}/project/${projectName}/files`);
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);
         }
@@ -402,7 +402,7 @@ export default function FileTree({ projectName, onFileClick, refreshKey, onRefre
             const fileName = prompt('Enter file name:');
             if (!fileName) return;
             try {
-              const response = await fetch(`${getApiBase()}/project/${projectName}/file/write`, {
+              const response = await fetch(`${await getApiBaseAsync()}/project/${projectName}/file/write`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ path: fileName, content: '' })

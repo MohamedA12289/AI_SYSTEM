@@ -2,6 +2,9 @@ import json
 import re
 import urllib.request
 import urllib.error
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+
+from fastapi import HTTPException
 
 from settings_store import get_active_model
 from agent_tools import TOOL_SCHEMA_TEXT
@@ -44,6 +47,8 @@ When in doubt, return a valid "respond" action.
 
 _ANSI_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
+_AI_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="cubos-ai")
+DEFAULT_AI_TIMEOUT_SECONDS = 15.0
 
 
 def _clean_text(text: str) -> str:
@@ -60,13 +65,27 @@ def _fallback_action_json(message: str) -> str:
     return json.dumps(payload)
 
 
-def ask_ollama(prompt: str) -> str:
-    result, _ = ask_ai(CHAT_SYSTEM_PROMPT, prompt)
+def ask_ollama(prompt: str, timeout: float | None = DEFAULT_AI_TIMEOUT_SECONDS) -> str:
+    future = _AI_EXECUTOR.submit(ask_ai, CHAT_SYSTEM_PROMPT, prompt)
+    try:
+        result, _ = future.result(timeout=timeout)
+    except FutureTimeout as exc:
+        raise HTTPException(
+            status_code=504,
+            detail={
+                "error": "ai_timeout",
+                "message": f"AI backend did not respond within {timeout:g} seconds.",
+            },
+        ) from exc
     return result
 
 
-def ask_ollama_for_action(prompt: str) -> str:
-    raw, _ = ask_ai(AGENT_SYSTEM_PROMPT, prompt)
+def ask_ollama_for_action(prompt: str, timeout: float | None = DEFAULT_AI_TIMEOUT_SECONDS) -> str:
+    future = _AI_EXECUTOR.submit(ask_ai, AGENT_SYSTEM_PROMPT, prompt)
+    try:
+        raw, _ = future.result(timeout=timeout)
+    except FutureTimeout:
+        return _fallback_action_json(f"AI backend did not respond within {timeout:g} seconds.")
     if not raw:
         return _fallback_action_json("I could not produce a valid tool action.")
     lowered = raw.lower()

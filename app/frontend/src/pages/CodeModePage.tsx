@@ -935,35 +935,25 @@ export default function CodeModePage({ isSelfUpgrade }: Props) {
     if (!folderPath.trim()) return;
     setOpenFolderLoading(true);
     try {
-      const BASE = (import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
-      const response = await fetch(`${BASE}/projects/import`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: folderPath.trim() }),
-      });
-      if (response.ok) {
-        const data = await response.json();
-        const projectName = data.project?.project_name || data.project_name;
+      try {
+        const data = await api.projects.importExisting({ path: folderPath.trim() });
+        const projectName = data.project?.project_name || (data as any).project_name;
         if (projectName) {
           setOpenFolderDialogVisible(false);
           navigate(`/project/${projectName}/code`);
         } else {
           toast.error('Failed to open folder: invalid response');
         }
-      } else if (response.status === 409) {
+      } catch (error: any) {
+        if (error?.status !== 409) throw error;
         const folderName = folderPath.trim().replace(/\\/g, '/').split('/').pop() || '';
-        const projectName = folderName.toLowerCase().replace(/[\s_]+/g, '-');
+        const projectName = error?.detail?.project_name || error?.body?.project_name || folderName.toLowerCase().replace(/[\s_]+/g, '-');
         if (projectName) {
           setOpenFolderDialogVisible(false);
           navigate(`/project/${projectName}/code`);
         } else {
           toast.error('Project already exists');
         }
-      } else {
-        const errText = await response.text();
-        let detail = errText;
-        try { detail = JSON.parse(errText)?.detail || errText; } catch {}
-        toast.error(`Failed to open folder: ${detail}`);
       }
     } catch (error: any) {
       toast.error(`Failed to open folder: ${error.message}`);

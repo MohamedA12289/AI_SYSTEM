@@ -156,8 +156,11 @@ export interface AppSettings {
     active_model: string;
   };
   ai_provider?: {
-    active: "ollama" | "groq";
+    active: "ollama" | "groq" | "openai" | "anthropic" | "openrouter";
     groq_model?: string;
+    openai_model?: string;
+    anthropic_model?: string;
+    openrouter_model?: string;
     fallback_to_ollama?: boolean;
   };
 }

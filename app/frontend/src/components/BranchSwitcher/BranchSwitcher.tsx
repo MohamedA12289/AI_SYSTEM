@@ -61,18 +61,23 @@ export default function BranchSwitcher({ projectName, currentBranch, onClose, on
     }
   };
 
-  const handleBranchSelect = (branch: string) => {
+  const handleBranchSelect = async (branch: string) => {
     if (branch === currentBranch) {
       onClose();
       return;
     }
-    
-    toast.info(`Branch switching to ${branch} requires backend support. Use the terminal: git checkout ${branch}`);
-    
-    if (onBranchSwitch) {
-      onBranchSwitch(branch);
+
+    try {
+      await api.git.checkout(projectName, branch);
+      toast.success(`Switched to ${branch}`);
+      if (onBranchSwitch) {
+        onBranchSwitch(branch);
+      }
+    } catch (error: any) {
+      toast.error(`Failed to switch branch: ${error?.message || "unknown error"}`);
+      return;
     }
-    
+
     onClose();
   };
 

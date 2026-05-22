@@ -38,7 +38,14 @@ hiddenimports = (
      'pandas.core.arrays.integer', 'pandas.core.arrays.floating',
      'pandas._libs.tslibs.np_datetime', 'pandas._libs.tslibs.nattype',
      'pandas._libs.tslibs.timedeltas', 'pandas._libs.tslibs.timestamps',
-     'numpy.core._multiarray_umath', 'numpy.core._multiarray_tests']
+     'numpy.core._multiarray_umath', 'numpy.core._multiarray_tests',
+    # Batch A/B/C local modules (lazy imports inside functions)
+    'role_prompts', 'edit_tools', 'git_tools', 'plan_store',
+    'compression', 'code_chunker',
+    'pr_tools', 'pr_tools.reviewer', 'lsp_client', 'subagent',
+    'mcp_client', 'skills_loader', 'browser_tools',
+    'voice_tools', 'vision_tools', 'slash_commands',
+    'prompt_history', 'theme_store']
 )
 
 datas = (
@@ -48,7 +55,13 @@ datas = (
     collect_data_files('pptx') +
     collect_data_files('docx') +
     collect_data_files('pytesseract') +
-    collect_data_files('winpty', include_py_files=False)
+    collect_data_files('winpty', include_py_files=False) +
+    [
+        # Bundle role prompts, skills, and built-in themes
+        ('prompts/roles', 'prompts/roles'),
+        ('skills', 'skills'),
+        ('themes', 'themes'),
+    ]
 )
 
 # winpty needs its native DLLs (winpty.dll, conpty.dll) and helper EXEs

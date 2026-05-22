@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import Editor from '@monaco-editor/react';
 import { SettingsManager } from '@/services/SettingsManager';
-import { getApiBase } from '@/services/api';
+import { getApiBaseAsync } from '@/services/api';
 
 interface EditorPanelProps {
   projectName: string;
@@ -179,7 +179,7 @@ export default function EditorPanel({ projectName, filePath, onContentChange, on
       setIsLoading(true);
       setError(null);
       try {
-        const response = await fetch(`${getApiBase()}/project/${projectName}/file?path=${encodeURIComponent(filePath)}`);
+        const response = await fetch(`${await getApiBaseAsync()}/project/${projectName}/file?path=${encodeURIComponent(filePath)}`);
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);
         }
@@ -206,7 +206,7 @@ export default function EditorPanel({ projectName, filePath, onContentChange, on
         e.preventDefault();
         if (filePath && content !== originalContent) {
           try {
-            const response = await fetch(`${getApiBase()}/project/${projectName}/file/overwrite`, {
+            const response = await fetch(`${await getApiBaseAsync()}/project/${projectName}/file/overwrite`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ path: filePath, content })

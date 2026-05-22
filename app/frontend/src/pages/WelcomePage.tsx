@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import CloneRepositoryDialog from '@/components/CloneRepositoryDialog';
+import { api, projectToDisplay } from '@/services/api';
 import './WelcomePage.css';
 
 interface Project {
@@ -17,10 +18,11 @@ export default function WelcomePage() {
   const [showCloneDialog, setShowCloneDialog] = useState(false);
 
   useEffect(() => {
-    fetch('/projects')
-      .then((res) => res.json())
+    api.projects.list()
       .then((data) => {
-        const filtered = data.filter((p: Project) => p.id !== 'self_upgrade');
+        const filtered = data
+          .filter((p) => p.project_name !== 'self_upgrade')
+          .map((p) => ({ ...projectToDisplay(p), path: p.workspace_root, last_accessed: p.created_at }));
         const sorted = filtered.sort((a: Project, b: Project) => {
           const timeA = a.last_accessed ? new Date(a.last_accessed).getTime() : 0;
           const timeB = b.last_accessed ? new Date(b.last_accessed).getTime() : 0;
@@ -65,21 +67,8 @@ export default function WelcomePage() {
 
       if (!result.canceled && result.filePaths.length > 0) {
         const folderPath = result.filePaths[0];
-        
-        // Import the folder as a new project
-        const response = await fetch('/projects/import', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path: folderPath }),
-        });
-
-        if (response.ok) {
-          const project = await response.json();
-          navigate(`/project/${project.id}/thread/latest`);
-        } else {
-          const error = await response.text();
-          toast.error(`Failed to import folder: ${error}`);
-        }
+        const data = await api.projects.importExisting({ path: folderPath });
+        navigate(`/project/${data.project.project_name}/thread/latest`);
       }
     } catch (err) {
       console.error('Failed to open folder dialog:', err);

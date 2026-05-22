@@ -5,7 +5,7 @@ import { CubOSBear } from "@/components/CubOSBear";
 import { ChatInput } from "@/components/ChatInput";
 import { ChatMessage } from "@/components/ChatMessage";
 import { ModelSelector } from "@/components/ModelSelector";
-import { api, getApiBase, isoToTime, projectToDisplay } from "@/services/api";
+import { api, isoToTime, projectToDisplay } from "@/services/api";
 import type { ChatMessage as ChatMessageType, Project } from "@/types";
 
 interface Props {
@@ -61,20 +61,14 @@ export default function HomePage({ projects, loading, onRefreshProjects }: Props
         const folderPath = result.filePaths[0];
         setImportLoading(true);
 
-        const response = await fetch(`${getApiBase()}/projects/import`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path: folderPath }),
-        });
-
-        if (response.ok) {
-          const data = await response.json();
+        try {
+          const data = await api.projects.importExisting({ path: folderPath });
           const project = data.project;
           await onRefreshProjects?.();
           navigate(`/project/${project.project_name}`);
-        } else if (response.status === 409) {
-          const data = await response.json().catch(() => ({}));
-          const projectName = data.project_name || data.detail?.project_name;
+        } catch (error: any) {
+          if (error?.status !== 409) throw error;
+          const projectName = error?.body?.project_name || error?.detail?.project_name;
           await onRefreshProjects?.();
           if (projectName) {
             navigate(`/project/${projectName}`);
@@ -82,10 +76,6 @@ export default function HomePage({ projects, loading, onRefreshProjects }: Props
             setImportError('Project already exists.');
             setTimeout(() => setImportError(null), 5000);
           }
-        } else {
-          const errorText = await response.text();
-          setImportError(`Failed to import folder: ${errorText}`);
-          setTimeout(() => setImportError(null), 5000);
         }
         setImportLoading(false);
       }

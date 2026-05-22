@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { getApiBase } from "@/services/api";
+import { getApiBaseAsync } from "@/services/api";
 
 interface Task {
   id: string;
@@ -25,7 +25,7 @@ export function TasksPanel({ projectPath }: TasksPanelProps) {
 
   const loadTasks = async () => {
     try {
-      const response = await fetch(`${getApiBase()}/api/tasks?project_path=${encodeURIComponent(projectPath)}`);
+      const response = await fetch(`${await getApiBaseAsync()}/api/tasks?project_path=${encodeURIComponent(projectPath)}`);
       if (response.ok) {
         const data = await response.json();
         setTasks(data);
@@ -47,7 +47,7 @@ export function TasksPanel({ projectPath }: TasksPanelProps) {
     };
 
     try {
-      const response = await fetch(`${getApiBase()}/api/tasks?project_path=${encodeURIComponent(projectPath)}`, {
+      const response = await fetch(`${await getApiBaseAsync()}/api/tasks?project_path=${encodeURIComponent(projectPath)}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(task)
@@ -65,7 +65,7 @@ export function TasksPanel({ projectPath }: TasksPanelProps) {
 
   const updateTaskStatus = async (taskId: string, newStatus: string) => {
     try {
-      const response = await fetch(`${getApiBase()}/api/tasks/${taskId}?project_path=${encodeURIComponent(projectPath)}`, {
+      const response = await fetch(`${await getApiBaseAsync()}/api/tasks/${taskId}?project_path=${encodeURIComponent(projectPath)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: newStatus })

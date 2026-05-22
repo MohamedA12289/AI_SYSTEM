@@ -381,7 +381,7 @@ class ImportProjectRequest(BaseModel):
     source_path: str
     access_mode: str = "import"
 
-@router.post("/projects/import")
+@router.post("/projects/import-linked")
 def import_project(req: ImportProjectRequest):
     validate_project_name(req.project_name)
     source = Path(req.source_path).resolve()

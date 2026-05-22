@@ -3,7 +3,7 @@ import { MessageCircle, Trash2 } from "lucide-react";
 import { ChatMessage } from "@/components/ChatMessage";
 import { ChatInput } from "@/components/ChatInput";
 import { ModelSelector } from "@/components/ModelSelector";
-import { getApiBase } from "@/services/api";
+import { getApiBaseAsync } from "@/services/api";
 import type { ChatMessage as ChatMessageType } from "@/types";
 
 const STORAGE_KEY = "cubos_standalone_chats";
@@ -46,16 +46,15 @@ export default function ChatsPage() {
     setMessages((prev) => [...prev, userMsg, assistantMsg]);
     setIsStreaming(true);
 
-    const base = getApiBase();
     const ctrl = new AbortController();
     cancelRef.current = () => ctrl.abort();
 
-    fetch(`${base}/chat/stream`, {
+    getApiBaseAsync().then((base) => fetch(`${base}/chat/stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ project_name: "self_upgrade", prompt: content }),
       signal: ctrl.signal,
-    }).then(async (res) => {
+    })).then(async (res) => {
       const reader = res.body?.getReader();
       const decoder = new TextDecoder();
       if (!reader) { setIsStreaming(false); return; }

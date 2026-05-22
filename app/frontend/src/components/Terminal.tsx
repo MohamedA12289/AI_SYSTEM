@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { Terminal as XTerm } from "xterm";
 import { FitAddon } from "xterm-addon-fit";
 import "xterm/css/xterm.css";
-import { getApiBase } from "@/services/api";
+import { getApiBaseAsync } from "@/services/api";
 
 interface TerminalProps {
   projectId: string;
@@ -60,45 +60,58 @@ export function Terminal({ projectId, workingDir }: TerminalProps) {
     xtermRef.current = xterm;
     fitAddonRef.current = fitAddon;
 
-    const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const apiBase = getApiBase();
-    let wsHost: string;
-    try {
-      wsHost = new URL(apiBase).host;
-    } catch {
-      wsHost = window.location.host.replace(/:\d+/, ":8000");
-    }
-    const ws = new WebSocket(`${wsProtocol}//${wsHost}/ws/terminal/${projectId}`);
-    wsRef.current = ws;
+    let disposed = false;
 
-    ws.onopen = () => {
-      xterm.writeln("\x1b[1;32m● Terminal connected\x1b[0m");
-      if (workingDir) {
-        ws.send(JSON.stringify({ type: "input", data: `cd ${workingDir}\r` }));
-      }
-    };
-
-    ws.onmessage = (event) => {
+    getApiBaseAsync().then((apiBase) => {
+      if (disposed) return;
+      const wsProtocol = apiBase.startsWith("https:") ? "wss:" : "ws:";
+      let wsHost: string;
       try {
-        const msg = JSON.parse(event.data);
-        if (msg.type === "output" && msg.data) {
-          xterm.write(msg.data);
-        }
+        wsHost = new URL(apiBase).host;
       } catch {
-        xterm.write(event.data);
+        wsHost = window.location.host.replace(/:\d+/, ":8000");
       }
-    };
 
-    ws.onerror = () => {
-      xterm.writeln("\r\n\x1b[1;31m✗ Terminal connection error\x1b[0m");
-    };
+      const ws = new WebSocket(`${wsProtocol}//${wsHost}/ws/terminal/${projectId}`);
+      wsRef.current = ws;
 
-    ws.onclose = () => {
-      xterm.writeln("\r\n\x1b[1;33m● Terminal disconnected\x1b[0m");
-    };
+      ws.onopen = () => {
+        xterm.writeln("\x1b[1;32mTerminal connected\x1b[0m");
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === "ready") {
+            if (workingDir) {
+              ws.send(JSON.stringify({ type: "input", data: `cd ${workingDir}\r` }));
+            }
+            return;
+          }
+          if (msg.type === "output" && msg.data) {
+            xterm.write(msg.data);
+          } else if (msg.type === "error") {
+            xterm.writeln(`\r\n\x1b[1;31m${msg.message || "Terminal error"}\x1b[0m`);
+          }
+        } catch {
+          xterm.write(event.data);
+        }
+      };
+
+      ws.onerror = () => {
+        xterm.writeln("\r\n\x1b[1;31mTerminal connection error\x1b[0m");
+      };
+
+      ws.onclose = () => {
+        xterm.writeln("\r\n\x1b[1;33mTerminal disconnected\x1b[0m");
+      };
+    }).catch((error) => {
+      xterm.writeln(`\r\n\x1b[1;31mTerminal setup failed: ${error?.message || "unknown"}\x1b[0m`);
+    });
 
     xterm.onData((data) => {
-      if (ws.readyState === WebSocket.OPEN) {
+      const ws = wsRef.current;
+      if (ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: "input", data }));
       }
     });
@@ -106,7 +119,8 @@ export function Terminal({ projectId, workingDir }: TerminalProps) {
     const handleResize = () => {
       if (fitAddonRef.current) {
         fitAddonRef.current.fit();
-        if (ws.readyState === WebSocket.OPEN && xtermRef.current) {
+        const ws = wsRef.current;
+        if (ws?.readyState === WebSocket.OPEN && xtermRef.current) {
           ws.send(JSON.stringify({
             type: "resize",
             cols: xtermRef.current.cols,
@@ -119,6 +133,7 @@ export function Terminal({ projectId, workingDir }: TerminalProps) {
     window.addEventListener("resize", handleResize);
 
     return () => {
+      disposed = true;
       window.removeEventListener("resize", handleResize);
       isInitializedRef.current = false;
       if (wsRef.current) {
@@ -130,7 +145,7 @@ export function Terminal({ projectId, workingDir }: TerminalProps) {
         xtermRef.current = null;
       }
     };
-  }, [projectId]);
+  }, [projectId, workingDir]);
 
   return (
     <div ref={terminalRef} className="w-full h-full bg-[#1e1e1e]" />

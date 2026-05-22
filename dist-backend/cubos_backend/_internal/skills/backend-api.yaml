@@ -1,0 +1,18 @@
+name: backend-api
+description: Python/FastAPI backend coding skill
+role: developer
+system_prompt: |
+  Focus on FastAPI endpoints, Pydantic schemas, and SQLite/SQL persistence.
+  Always validate inputs, handle errors explicitly, and prefer dependency
+  injection. Use edit_file for surgical edits and write tests via create_test.
+provider: null
+model: null
+allowed_tools:
+  - read_file
+  - list_files
+  - write_file
+  - edit_file
+  - run_command
+  - create_test
+  - run_test
+  - respond

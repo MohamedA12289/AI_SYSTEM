@@ -10,36 +10,60 @@ from __future__ import annotations
 
 import json
 import os
+import importlib.util
+import shutil
+import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from config import AI_SYSTEM_BASE_PATH
+from process_utils import run_hidden
+
 # --- Paths -----------------------------------------------------------------------
 _HERE = Path(os.path.dirname(os.path.abspath(__file__)))
-_PROJECT_ROOT = _HERE.parent.parent  # app/backend -> app -> repo root
-PIPER_DIR = _PROJECT_ROOT / "models" / "piper"
+_PROJECT_ROOT = _HERE.parent.parent.parent  # app/backend -> repo root
+PIPER_DIR = AI_SYSTEM_BASE_PATH / "models" / "piper"
 PIPER_DIR.mkdir(parents=True, exist_ok=True)
+VOICE_INDEX_CACHE_PATH = PIPER_DIR / "voices_index.json"
+VOICE_INDEX_MAX_AGE_SECONDS = 24 * 60 * 60
 
 # --- Faster-whisper lazy load ---------------------------------------------------
 _WHISPER_AVAILABLE = False
+_WHISPER_IMPORT_CHECKED = False
+_WHISPER_INSTALLED = importlib.util.find_spec("faster_whisper") is not None
 _whisper_model = None
 _whisper_lock = threading.Lock()
 _whisper_model_size: str = "base.en"
+WhisperModel = None  # type: ignore
 
-try:
-    from faster_whisper import WhisperModel  # type: ignore
-    _WHISPER_AVAILABLE = True
-except Exception:
-    WhisperModel = None  # type: ignore
+
+def _load_whisper_module() -> bool:
+    global _WHISPER_AVAILABLE, _WHISPER_IMPORT_CHECKED, WhisperModel
+    if _WHISPER_IMPORT_CHECKED:
+        return _WHISPER_AVAILABLE
+    _WHISPER_IMPORT_CHECKED = True
+    if not _WHISPER_INSTALLED:
+        _WHISPER_AVAILABLE = False
+        return False
+    try:
+        from faster_whisper import WhisperModel as _WhisperModel  # type: ignore
+        WhisperModel = _WhisperModel  # type: ignore
+        _WHISPER_AVAILABLE = True
+    except Exception:
+        WhisperModel = None  # type: ignore
+        _WHISPER_AVAILABLE = False
+    return _WHISPER_AVAILABLE
 
 
 def is_stt_available() -> bool:
-    return _WHISPER_AVAILABLE
+    return _WHISPER_INSTALLED
 
 
 def _get_whisper(model_size: str = "base.en"):
     global _whisper_model, _whisper_model_size
-    if not _WHISPER_AVAILABLE:
+    if not _load_whisper_module():
         raise RuntimeError("faster-whisper not installed")
     with _whisper_lock:
         if _whisper_model is None or _whisper_model_size != model_size:
@@ -49,7 +73,7 @@ def _get_whisper(model_size: str = "base.en"):
 
 
 def transcribe_path(path: str, model_size: str = "base.en", language: Optional[str] = None) -> Dict[str, Any]:
-    if not _WHISPER_AVAILABLE:
+    if not _load_whisper_module():
         raise RuntimeError("faster-whisper not installed")
     if not os.path.isfile(path):
         raise FileNotFoundError(path)
@@ -70,21 +94,101 @@ def transcribe_path(path: str, model_size: str = "base.en", language: Optional[s
     }
 
 
-def transcribe_bytes(audio_bytes: bytes, suffix: str = ".wav", model_size: str = "base.en", language: Optional[str] = None) -> Dict[str, Any]:
+def _normalized_suffix(value: str | None) -> str:
+    suffix = (value or "").strip().lower()
+    if not suffix:
+        return ""
+    if not suffix.startswith("."):
+        suffix = "." + suffix
+    return suffix
+
+
+def _guess_audio_suffix(audio_bytes: bytes, filename: str | None = None, suffix: str | None = None) -> str:
+    explicit = _normalized_suffix(suffix)
+    if explicit:
+        return explicit
+
+    name_suffix = _normalized_suffix(Path(filename or "").suffix)
+    if name_suffix:
+        return name_suffix
+
+    header = audio_bytes[:16]
+    if len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WAVE":
+        return ".wav"
+    if header.startswith(b"\x1aE\xdf\xa3"):
+        return ".webm"
+    if header.startswith(b"OggS"):
+        return ".ogg"
+    if header.startswith(b"ID3") or header[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"):
+        return ".mp3"
+    if len(header) >= 12 and header[4:8] == b"ftyp":
+        return ".m4a"
+    return ".wav"
+
+
+def _ffmpeg_path() -> str | None:
+    explicit = os.environ.get("FFMPEG_PATH", "").strip()
+    if explicit and Path(explicit).exists():
+        return explicit
+    return shutil.which("ffmpeg")
+
+
+def _convert_to_wav_if_needed(path: str, suffix: str) -> tuple[str, bool]:
+    if suffix == ".wav":
+        return path, False
+
+    ffmpeg = _ffmpeg_path()
+    if not ffmpeg:
+        raise RuntimeError(f"ffmpeg is required to transcribe {suffix} audio. Install ffmpeg or upload WAV audio.")
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as wav_tmp:
+        wav_path = wav_tmp.name
+
+    result = run_hidden(
+        [ffmpeg, "-y", "-i", path, "-ac", "1", "-ar", "16000", wav_path],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if result.returncode != 0:
+        try:
+            os.unlink(wav_path)
+        except Exception:
+            pass
+        detail = (result.stderr or result.stdout or "").strip()[:500]
+        raise RuntimeError(f"ffmpeg could not convert audio: {detail}")
+    return wav_path, True
+
+
+def transcribe_bytes(
+    audio_bytes: bytes,
+    suffix: str | None = None,
+    model_size: str = "base.en",
+    language: Optional[str] = None,
+    filename: str | None = None,
+) -> Dict[str, Any]:
     """Transcribe in-memory audio. Writes to a temp file because faster-whisper
     expects a file path or numpy array; file path is the simplest cross-format route.
     """
-    import tempfile
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+    detected_suffix = _guess_audio_suffix(audio_bytes, filename=filename, suffix=suffix)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=detected_suffix) as tmp:
         tmp.write(audio_bytes)
         tmp_path = tmp.name
+    transcribe_target = tmp_path
+    converted = False
     try:
-        return transcribe_path(tmp_path, model_size=model_size, language=language)
+        transcribe_target, converted = _convert_to_wav_if_needed(tmp_path, detected_suffix)
+        return transcribe_path(transcribe_target, model_size=model_size, language=language)
     finally:
         try:
             os.unlink(tmp_path)
         except Exception:
             pass
+        if converted:
+            try:
+                os.unlink(transcribe_target)
+            except Exception:
+                pass
 
 
 # --- Piper voice picker ---------------------------------------------------------
@@ -110,18 +214,54 @@ def list_installed_voices() -> List[Dict[str, Any]]:
     return out
 
 
-def fetch_voice_index(timeout: int = 20) -> Dict[str, Any]:
+def _load_cached_voice_index(max_age_seconds: int | None = VOICE_INDEX_MAX_AGE_SECONDS) -> Dict[str, Any] | None:
+    try:
+        if not VOICE_INDEX_CACHE_PATH.exists():
+            return None
+        if max_age_seconds is not None:
+            age = time.time() - VOICE_INDEX_CACHE_PATH.stat().st_mtime
+            if age > max_age_seconds:
+                return None
+        data = json.loads(VOICE_INDEX_CACHE_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _write_cached_voice_index(data: Dict[str, Any]) -> None:
+    try:
+        PIPER_DIR.mkdir(parents=True, exist_ok=True)
+        VOICE_INDEX_CACHE_PATH.write_text(json.dumps(data), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def fetch_voice_index(timeout: int = 3, refresh: bool = False) -> Dict[str, Any]:
     """Download the upstream voices.json catalog. Returns the raw mapping."""
+    if not refresh:
+        cached = _load_cached_voice_index()
+        if cached is not None:
+            return cached
+
     import urllib.request
     req = urllib.request.Request(PIPER_VOICES_INDEX_URL, headers={"User-Agent": "CubOS"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        data = resp.read()
-    return json.loads(data.decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+        data = json.loads(raw.decode("utf-8"))
+        if isinstance(data, dict):
+            _write_cached_voice_index(data)
+            return data
+    except Exception:
+        stale = _load_cached_voice_index(max_age_seconds=None)
+        if stale is not None:
+            return stale
+    return {}
 
 
-def list_available_voices(timeout: int = 20) -> List[Dict[str, Any]]:
+def list_available_voices(timeout: int = 3, refresh: bool = False) -> List[Dict[str, Any]]:
     """Return a flat list of installable voices (name + files + lang)."""
-    idx = fetch_voice_index(timeout=timeout)
+    idx = fetch_voice_index(timeout=timeout, refresh=refresh)
     out: List[Dict[str, Any]] = []
     if not isinstance(idx, dict):
         return out
@@ -146,6 +286,9 @@ def download_voice(voice_key: str, timeout: int = 120) -> Dict[str, Any]:
     import urllib.request
     idx = fetch_voice_index(timeout=20)
     meta = idx.get(voice_key)
+    if not meta:
+        idx = fetch_voice_index(timeout=20, refresh=True)
+        meta = idx.get(voice_key)
     if not meta or not isinstance(meta, dict):
         raise ValueError(f"Unknown voice key: {voice_key!r}")
     files = meta.get("files") or {}
@@ -171,7 +314,7 @@ def download_voice(voice_key: str, timeout: int = 120) -> Dict[str, Any]:
 def run_voice_op(project_name: str, op: str, args: dict) -> Dict[str, Any]:
     op = (op or "").strip().lower()
     if op == "stt_available":
-        return {"available": _WHISPER_AVAILABLE}
+        return {"available": is_stt_available()}
     if op == "transcribe":
         path = args.get("path")
         if not path:
@@ -180,7 +323,7 @@ def run_voice_op(project_name: str, op: str, args: dict) -> Dict[str, Any]:
     if op == "voices_installed":
         return {"voices": list_installed_voices(), "dir": str(PIPER_DIR)}
     if op == "voices_available":
-        return {"voices": list_available_voices(timeout=int(args.get("timeout", 20)))}
+        return {"voices": list_available_voices(timeout=int(args.get("timeout", 3)), refresh=bool(args.get("refresh", False)))}
     if op == "voice_download":
         key = args.get("key")
         if not key:

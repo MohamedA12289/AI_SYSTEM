@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { getApiBase } from "@/services/api";
+import { getApiBaseAsync } from "@/services/api";
 
 interface GitFile {
   file: string;
@@ -29,7 +29,7 @@ export function SourceControlPanel({ projectPath }: SourceControlPanelProps) {
 
   const loadGitStatus = async () => {
     try {
-      const response = await fetch(`${getApiBase()}/api/git/status?project_path=${encodeURIComponent(projectPath)}`);
+      const response = await fetch(`${await getApiBaseAsync()}/api/git/status?project_path=${encodeURIComponent(projectPath)}`);
       if (response.ok) {
         const data = await response.json();
         setGitStatus(data);
@@ -42,7 +42,7 @@ export function SourceControlPanel({ projectPath }: SourceControlPanelProps) {
   const stageFile = async (file: string) => {
     setLoading(true);
     try {
-      const response = await fetch(`${getApiBase()}/api/git/stage`, {
+      const response = await fetch(`${await getApiBaseAsync()}/api/git/stage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ project_path: projectPath, files: [file] }),
@@ -59,7 +59,7 @@ export function SourceControlPanel({ projectPath }: SourceControlPanelProps) {
   const unstageFile = async (file: string) => {
     setLoading(true);
     try {
-      const response = await fetch(`${getApiBase()}/api/git/unstage`, {
+      const response = await fetch(`${await getApiBaseAsync()}/api/git/unstage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ project_path: projectPath, files: [file] }),
@@ -77,7 +77,7 @@ export function SourceControlPanel({ projectPath }: SourceControlPanelProps) {
     if (!commitMessage.trim()) return;
     setLoading(true);
     try {
-      const response = await fetch(`${getApiBase()}/api/git/commit`, {
+      const response = await fetch(`${await getApiBaseAsync()}/api/git/commit`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ project_path: projectPath, message: commitMessage }),
@@ -95,7 +95,7 @@ export function SourceControlPanel({ projectPath }: SourceControlPanelProps) {
   const push = async () => {
     setLoading(true);
     try {
-      await fetch(`${getApiBase()}/api/git/push`, {
+      await fetch(`${await getApiBaseAsync()}/api/git/push`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ project_path: projectPath }),
@@ -110,7 +110,7 @@ export function SourceControlPanel({ projectPath }: SourceControlPanelProps) {
   const pull = async () => {
     setLoading(true);
     try {
-      await fetch(`${getApiBase()}/api/git/pull`, {
+      await fetch(`${await getApiBaseAsync()}/api/git/pull`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ project_path: projectPath }),

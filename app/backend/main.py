@@ -4,10 +4,11 @@ from wave1_router import router as wave1_router
 from thread_routes import router as thread_router
 
 
-from fastapi import FastAPI, HTTPException, Query, WebSocket, UploadFile, File as FileField, Form
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, UploadFile, File as FileField, Form
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import asyncio
 import ast
 import os
 import json
@@ -68,6 +69,7 @@ from project_registry import (
     create_project,
     import_project,
     get_registered_project,
+    assert_project_registered,
     update_project,
     delete_project,
 )
@@ -80,6 +82,7 @@ from tests_manager import list_tests, create_test, update_test, delete_test, run
 from settings_store import read_settings, update_settings, list_models, get_assistant_mode, get_active_provider, list_groq_models
 from project_search import search_project
 from diff_tools import build_unified_diff
+from process_utils import run_hidden, with_hidden_subprocess
 
 app = FastAPI()
 app.add_middleware(
@@ -147,9 +150,12 @@ class CreateProjectRequest(BaseModel):
     description: str = ""
 
 class ImportProjectRequest(BaseModel):
-    path: str
+    path: str | None = None
+    source_path: str | None = None
+    project_name: str | None = None
     display_name: str | None = None
     description: str = ""
+    access_mode: str = "import"
 
 class UpdateProjectRequest(BaseModel):
     display_name: str | None = None
@@ -334,6 +340,7 @@ def format_step_history(step_history: list[dict]) -> str:
 
 def build_chat_context(project_name: str, prompt: str) -> str:
     ensure_projects_registry()
+    assert_project_registered(project_name)
     ensure_project_memory(project_name)
     get_project_root(project_name)
     messages = read_messages_page(project_name, offset=0, limit=20)["items"]
@@ -374,6 +381,7 @@ Current User Request:
 
 def build_agent_context(project_name: str, prompt: str) -> str:
     ensure_projects_registry()
+    assert_project_registered(project_name)
     ensure_project_memory(project_name)
     get_project_root(project_name)
     messages = read_messages_page(project_name, offset=0, limit=20)["items"]
@@ -418,6 +426,7 @@ Current User Request:
 
 def build_agent_loop_context(project_name: str, original_prompt: str, step_history: list[dict], current_step: int, max_steps: int) -> str:
     ensure_projects_registry()
+    assert_project_registered(project_name)
     ensure_project_memory(project_name)
     get_project_root(project_name)
     messages = read_messages_page(project_name, offset=0, limit=20)["items"]
@@ -646,10 +655,38 @@ def create_project_endpoint(request: CreateProjectRequest):
 
 @app.post("/projects/import")
 def import_project_endpoint(request: ImportProjectRequest):
+    raw_path = (request.path or request.source_path or "").strip()
+    if not raw_path:
+        raise HTTPException(status_code=422, detail="Either 'path' or 'source_path' is required.")
     try:
-        project = import_project(path=request.path, display_name=request.display_name, description=request.description)
-        log_activity(project["project_name"], "Project imported", request.path, type="project")
-        return {"imported": True, "project": project}
+        project = import_project(
+            path=raw_path,
+            display_name=request.display_name or request.project_name,
+            description=request.description,
+            project_name=request.project_name,
+        )
+        access_mode = (request.access_mode or "import").strip().lower()
+        if access_mode in {"link", "link_readonly"}:
+            from config import PROJECTS_REGISTRY_PATH
+            source = os.path.abspath(raw_path)
+            data = json.loads(PROJECTS_REGISTRY_PATH.read_text(encoding="utf-8"))
+            for item in data.get("projects", []):
+                if item.get("project_name") == project["project_name"]:
+                    item["linked_source"] = source
+                    item["source_mode"] = access_mode
+                    item["workspace_root"] = source
+                    item["scope_root"] = source
+                    project = item
+                    break
+            PROJECTS_REGISTRY_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        log_activity(project["project_name"], "Project imported", raw_path, type="project")
+        return {
+            "imported": True,
+            "created": True,
+            "project": project,
+            "linked_source": project.get("linked_source"),
+            "access_mode": request.access_mode,
+        }
     except FileExistsError as e:
         raise HTTPException(status_code=409, detail={"project_name": str(e), "message": "Project already exists."})
     except FileNotFoundError as e:
@@ -780,6 +817,7 @@ def get_chat_summary(project_name: str):
 
 @app.post("/project/{project_name}/chat/summary/refresh")
 def refresh_chat_summary(project_name: str):
+    assert_project_registered(project_name)
     messages = read_messages(project_name)
     recent = messages[-30:]
     prompt = "Summarize this project conversation for long-term coding memory:\n\n" + json.dumps(recent, indent=2)
@@ -951,9 +989,8 @@ def search_files_endpoint(project_name: str, q: str = Query(..., description="Se
 def get_git_branch_endpoint(project_name: str):
     try:
         from file_tools import get_project_root
-        import subprocess
         project_root = str(get_project_root(project_name))
-        result = subprocess.run(
+        result = run_hidden(
             ["git", "branch", "--show-current"],
             cwd=project_root,
             capture_output=True,
@@ -1076,11 +1113,13 @@ def stream_command_endpoint(project_name: str, request: CommandRunRequest):
         try:
             proc = subprocess.Popen(
                 request.command,
-                cwd=cwd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
+                **with_hidden_subprocess({
+                    "cwd": cwd,
+                    "stdout": subprocess.PIPE,
+                    "stderr": subprocess.STDOUT,
+                    "text": True,
+                    "bufsize": 1,
+                }),
             )
             for line in iter(proc.stdout.readline, ""):
                 yield f"data: {json.dumps({'line': line.rstrip()})}\n\n"
@@ -1107,7 +1146,7 @@ def get_diagnostics(project_name: str):
     tsconfig = os.path.join(cwd, "tsconfig.json")
     if os.path.exists(tsconfig):
         try:
-            result = subprocess.run(
+            result = run_hidden(
                 ["npx", "tsc", "--noEmit", "--pretty", "false"],
                 cwd=cwd,
                 capture_output=True,
@@ -1493,9 +1532,9 @@ def list_voices_endpoint():
     return {"voices": list_installed_voices()}
 
 @app.get("/voice/available")
-def list_available_voices_endpoint():
+async def list_available_voices_endpoint(refresh: bool = False):
     from voice_tools import list_available_voices
-    return {"voices": list_available_voices()}
+    return {"voices": await asyncio.to_thread(list_available_voices, refresh=refresh)}
 
 @app.post("/voice/download")
 def download_voice_endpoint(payload: dict):
@@ -1504,15 +1543,25 @@ def download_voice_endpoint(payload: dict):
 
 @app.post("/voice/transcribe")
 async def transcribe_endpoint(file: UploadFile = FileField(...)):
-    from voice_tools import transcribe_bytes
+    from voice_tools import is_stt_available, transcribe_bytes
+    if not is_stt_available():
+        raise HTTPException(status_code=503, detail="Speech-to-text is not available because faster-whisper is not installed.")
     data = await file.read()
-    return transcribe_bytes(data, filename=file.filename or "audio.wav")
+    try:
+        return await asyncio.to_thread(transcribe_bytes, data, filename=file.filename or "audio.wav")
+    except RuntimeError as exc:
+        message = str(exc)
+        lower = message.lower()
+        if "faster-whisper" in lower:
+            raise HTTPException(status_code=503, detail=message) from exc
+        raise HTTPException(status_code=422, detail=message) from exc
 
 @app.websocket("/ws/voice")
 async def voice_websocket(websocket: WebSocket):
     """Streaming voice: client sends audio bytes; server returns transcript JSON on close/flush."""
-    from voice_tools import transcribe_bytes
+    from voice_tools import is_stt_available, transcribe_bytes
     await websocket.accept()
+    await websocket.send_json({"type": "ready", "stt_available": is_stt_available()})
     buf = bytearray()
     try:
         while True:
@@ -1524,7 +1573,7 @@ async def voice_websocket(websocket: WebSocket):
             elif "text" in msg and msg["text"]:
                 txt = msg["text"]
                 if txt == "__flush__":
-                    result = transcribe_bytes(bytes(buf), filename="stream.wav")
+                    result = await asyncio.to_thread(transcribe_bytes, bytes(buf), filename="stream.wav")
                     await websocket.send_json(result)
                     buf.clear()
                 elif txt == "__end__":
@@ -1537,7 +1586,7 @@ async def voice_websocket(websocket: WebSocket):
     finally:
         if buf:
             try:
-                result = transcribe_bytes(bytes(buf), filename="stream.wav")
+                result = await asyncio.to_thread(transcribe_bytes, bytes(buf), filename="stream.wav")
                 await websocket.send_json(result)
             except Exception:
                 pass
@@ -1562,6 +1611,7 @@ def get_run(project_name: str, run_id: str):
 def agent_chat(request: AgentChatRequest):
     project_name = request.project_name
     prompt = request.prompt
+    assert_project_registered(project_name)
     default_allow_writes, default_allow_commands = _get_default_approval_mode()
     allow_writes = request.allow_writes or default_allow_writes
     allow_commands = request.allow_commands or default_allow_commands
@@ -1618,6 +1668,8 @@ Give the user a concise natural-language response.
         _record_run(project_name, run_id, {"id": run_id, "type": "agent_chat", "status": "done", "assistant_message": assistant_message, "tool_execution": execution, "created_at": now_iso()})
         return {"run_id": run_id, "assistant_message": assistant_message, "raw_model_output": raw_action, "action_payload": action_payload, "tool_execution": execution}
 
+    except HTTPException:
+        raise
     except Exception as e:
         _record_run(project_name, run_id, {"id": run_id, "type": "agent_chat", "status": "error", "error": str(e), "created_at": now_iso()})
         raise HTTPException(status_code=500, detail=str(e))
@@ -1626,6 +1678,7 @@ Give the user a concise natural-language response.
 def agent_loop(request: AgentLoopRequest):
     project_name = request.project_name
     prompt = request.prompt
+    assert_project_registered(project_name)
     default_allow_writes, default_allow_commands = _get_default_approval_mode()
     allow_writes = request.allow_writes or default_allow_writes
     allow_commands = request.allow_commands or default_allow_commands
@@ -1717,9 +1770,31 @@ def agent_loop(request: AgentLoopRequest):
             "step_history": step_history,
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         _record_run(project_name, run_id, {"id": run_id, "type": "agent_loop", "status": "error", "error": str(e), "created_at": now_iso()})
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.websocket("/ws/terminal/health")
+async def terminal_health_websocket(websocket: WebSocket):
+    await websocket.accept()
+    await websocket.send_json({"type": "ready", "service": "terminal"})
+    try:
+        while True:
+            msg = await websocket.receive()
+            if msg.get("type") == "websocket.disconnect":
+                break
+            if "text" in msg:
+                await websocket.send_json({"type": "pong", "data": msg.get("text")})
+    except WebSocketDisconnect:
+        pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 @app.websocket("/ws/terminal/{project_name}")
@@ -1743,7 +1818,7 @@ def clone_git_project(request: CloneGitRequest):
     if target_path.exists():
         raise HTTPException(status_code=400, detail=f"Project directory already exists: {project_name}")
     try:
-        result = subprocess.run(
+        result = run_hidden(
             ["git", "clone", request.repo_url, str(target_path)],
             capture_output=True, text=True, timeout=120,
         )

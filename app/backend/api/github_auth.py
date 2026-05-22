@@ -2,6 +2,7 @@ import os
 import secrets
 import httpx
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional
 
@@ -23,10 +24,37 @@ class PATAuthRequest(BaseModel):
     token: str
 
 
+def _oauth_config_status() -> dict:
+    client_id_present = bool(GITHUB_CLIENT_ID)
+    client_secret_present = bool(GITHUB_CLIENT_SECRET)
+    return {
+        "configured": client_id_present and client_secret_present,
+        "client_id_present": client_id_present,
+        "client_secret_present": client_secret_present,
+    }
+
+
+def _oauth_not_configured_response() -> JSONResponse:
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": "GitHub OAuth not configured",
+            "configured": False,
+            "client_id_present": bool(GITHUB_CLIENT_ID),
+            "client_secret_present": bool(GITHUB_CLIENT_SECRET),
+        },
+    )
+
+
+@router.get("/config")
+async def get_oauth_config():
+    return _oauth_config_status()
+
+
 @router.get("/initiate")
 async def initiate_oauth():
-    if not GITHUB_CLIENT_ID:
-        raise HTTPException(status_code=500, detail="GitHub OAuth not configured")
+    if not _oauth_config_status()["configured"]:
+        return _oauth_not_configured_response()
     
     state = secrets.token_urlsafe(32)
     auth_sessions[state] = {"authenticated": False}
@@ -41,8 +69,8 @@ async def oauth_callback(code: str = Query(...), state: str = Query(...)):
     if state not in auth_sessions:
         raise HTTPException(status_code=400, detail="Invalid state parameter")
     
-    if not GITHUB_CLIENT_ID or not GITHUB_CLIENT_SECRET:
-        raise HTTPException(status_code=500, detail="GitHub OAuth not configured")
+    if not _oauth_config_status()["configured"]:
+        return _oauth_not_configured_response()
     
     async with httpx.AsyncClient() as client:
         token_response = await client.post(

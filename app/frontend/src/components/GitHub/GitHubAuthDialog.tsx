@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { getApiBase } from "@/services/api";
+import { getApiBaseAsync } from "@/services/api";
 
 interface GitHubAuthDialogProps {
   onClose: () => void;
@@ -17,12 +17,22 @@ export function GitHubAuthDialog({ onClose, onAuthenticated }: GitHubAuthDialogP
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch(`${getApiBase()}/api/github/auth/initiate`);
-      const data = await response.json();
+      const response = await fetch(`${await getApiBaseAsync()}/api/github/auth/initiate`);
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data?.detail || "GitHub OAuth is not configured");
+      }
+      if (!data?.auth_url || !data?.state) {
+        throw new Error("GitHub OAuth did not return an authorization URL");
+      }
       
       setAuthState(data.state);
       
-      window.cubosDesktop.openExternal(data.auth_url);
+      if (window.cubosDesktop?.openExternal) {
+        window.cubosDesktop.openExternal(data.auth_url);
+      } else {
+        window.open(data.auth_url, "_blank", "noopener,noreferrer");
+      }
       
       startPolling(data.state);
     } catch (err: any) {
@@ -34,7 +44,7 @@ export function GitHubAuthDialog({ onClose, onAuthenticated }: GitHubAuthDialogP
   const startPolling = (state: string) => {
     const pollInterval = setInterval(async () => {
       try {
-        const response = await fetch(`${getApiBase()}/api/github/auth/status?state=${state}`);
+        const response = await fetch(`${await getApiBaseAsync()}/api/github/auth/status?state=${state}`);
         const data = await response.json();
         
         if (data.authenticated && data.username) {
@@ -59,7 +69,7 @@ export function GitHubAuthDialog({ onClose, onAuthenticated }: GitHubAuthDialogP
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch(`${getApiBase()}/api/github/auth/pat`, {
+      const response = await fetch(`${await getApiBaseAsync()}/api/github/auth/pat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token: patToken }),

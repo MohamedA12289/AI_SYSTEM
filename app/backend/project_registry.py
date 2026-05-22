@@ -1,10 +1,14 @@
 
 from datetime import datetime, timezone
 import json
+import os
 import re
 from pathlib import Path
 
+from fastapi import HTTPException
+
 from config import (
+    AI_SYSTEM_BASE_PATH,
     CONFIGS_BASE_PATH,
     PROJECTS_REGISTRY_PATH,
     MEMORY_BASE_PATH,
@@ -66,11 +70,70 @@ def _import_legacy_projects(current_projects: list[dict]) -> list[dict]:
             pass
     return current_projects
 
+def _legacy_base_candidates() -> list[Path]:
+    candidates: list[Path] = []
+    explicit = os.environ.get("CUBOS_LEGACY_BASE_PATH", "").strip()
+    if explicit:
+        candidates.append(Path(explicit))
+
+    current = AI_SYSTEM_BASE_PATH.resolve()
+    if current.name.endswith(" - Codex"):
+        candidates.append(current.with_name(current.name[:-len(" - Codex")]))
+    if current.name.endswith("-Codex"):
+        candidates.append(current.with_name(current.name[:-len("-Codex")]))
+
+    # Current copied workspace on the user's machine.
+    candidates.append(Path(r"D:\AI_SYSTEM"))
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        try:
+            resolved = str(candidate.resolve()).lower()
+        except Exception:
+            resolved = str(candidate).lower()
+        if resolved and resolved not in seen and resolved != str(current).lower():
+            unique.append(candidate)
+            seen.add(resolved)
+    return unique
+
+def _rewrite_legacy_path(value: object) -> object:
+    if not isinstance(value, str) or not value.strip():
+        return value
+    current = AI_SYSTEM_BASE_PATH.resolve()
+    try:
+        source = Path(value).resolve()
+    except Exception:
+        return value
+    for legacy_base in _legacy_base_candidates():
+        try:
+            rel = source.relative_to(legacy_base.resolve())
+        except Exception:
+            continue
+        return str((current / rel).resolve())
+    return value
+
+def _normalize_registry_projects(projects: list[dict]) -> list[dict]:
+    for item in projects:
+        if not isinstance(item, dict):
+            continue
+        if item.get("project_name") == SELF_UPGRADE_PROJECT_NAME:
+            existing_created_at = item.get("created_at")
+            item.update(_self_upgrade_entry())
+            if existing_created_at:
+                item["created_at"] = existing_created_at
+            continue
+        for key in ("workspace_root", "memory_root", "scope_root", "linked_source"):
+            if key in item:
+                item[key] = _rewrite_legacy_path(item.get(key))
+    return projects
+
 def ensure_projects_registry() -> None:
     CONFIGS_BASE_PATH.mkdir(parents=True, exist_ok=True)
     if not PROJECTS_REGISTRY_PATH.exists():
         data: dict = {"projects": [_self_upgrade_entry()]}
         _import_legacy_projects(data["projects"])
+        data["projects"] = _normalize_registry_projects(data["projects"])
         PROJECTS_REGISTRY_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
         ensure_project_memory(SELF_UPGRADE_PROJECT_NAME)
         return
@@ -96,6 +159,7 @@ def ensure_projects_registry() -> None:
         projects = _import_legacy_projects(projects)
         migration_done_flag.write_text("1", encoding="utf-8")
 
+    projects = _normalize_registry_projects(projects)
     data["projects"] = projects
     PROJECTS_REGISTRY_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
     ensure_project_memory(SELF_UPGRADE_PROJECT_NAME)
@@ -127,6 +191,22 @@ def get_registered_project(project_name: str) -> dict:
         if isinstance(project, dict) and project.get("project_name") == project_name:
             return project
     raise FileNotFoundError("Project is not registered.")
+
+def assert_project_registered(project_name: str, require_workspace: bool = True) -> dict:
+    try:
+        project = get_registered_project(project_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    workspace_root = str(project.get("workspace_root") or "").strip()
+    if require_workspace and workspace_root and not Path(workspace_root).exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Registered project workspace does not exist: {workspace_root}",
+        )
+    return project
 
 def _project_exists(project_name: str) -> bool:
     data = read_projects_registry()
@@ -179,7 +259,12 @@ def create_project(project_name: str, display_name: str | None = None, descripti
     PROJECTS_REGISTRY_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
     return entry
 
-def import_project(path: str, display_name: str | None = None, description: str = "") -> dict:
+def import_project(
+    path: str,
+    display_name: str | None = None,
+    description: str = "",
+    project_name: str | None = None,
+) -> dict:
     folder_path = Path(path).resolve()
 
     if not folder_path.exists():
@@ -187,9 +272,14 @@ def import_project(path: str, display_name: str | None = None, description: str 
     if not folder_path.is_dir():
         raise ValueError(f"Path is not a directory: {path}")
 
-    raw_name = folder_path.name.lower()
-    project_name = re.sub(r'[^a-z0-9]+', '-', raw_name)
-    project_name = project_name.strip('-') or 'project'
+    explicit_name = bool(project_name and str(project_name).strip())
+    if explicit_name:
+        project_name = str(project_name).strip()
+        validate_project_name(project_name)
+    else:
+        raw_name = folder_path.name.lower()
+        project_name = re.sub(r'[^a-z0-9]+', '-', raw_name)
+        project_name = project_name.strip('-') or 'project'
 
     if project_name == SELF_UPGRADE_PROJECT_NAME:
         raise ValueError(f"'{SELF_UPGRADE_PROJECT_NAME}' is reserved.")
@@ -197,6 +287,8 @@ def import_project(path: str, display_name: str | None = None, description: str 
     base_name = project_name
     counter = 1
     while _project_exists(project_name):
+        if explicit_name:
+            raise FileExistsError(project_name)
         project_name = f"{base_name}-{counter}"
         counter += 1
         if counter > 100:

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -14,6 +13,8 @@ from config import CONFIGS_BASE_PATH
 from file_tools import get_project_root, read_text_file, resolve_safe_path
 from memory import ensure_project_memory
 from ollama_client import ask_ollama
+from process_utils import run_hidden
+from project_registry import assert_project_registered
 
 router = APIRouter(tags=["wave2"])
 
@@ -281,7 +282,7 @@ def _set_linked_repo(project_name: str, owner: str, repo: str, default_branch: s
 def _git_run(project_name: str, command: list[str]) -> dict:
     project_root = get_project_root(project_name)
     try:
-        result = subprocess.run(command, cwd=str(project_root), capture_output=True, text=True, shell=False)
+        result = run_hidden(command, cwd=str(project_root), capture_output=True, text=True, shell=False)
         return {
             "command": command,
             "cwd": str(project_root),
@@ -367,6 +368,7 @@ def _current_git_branch(project_name: str) -> str:
 
 @router.post("/project/{project_name}/workspace/analyze")
 def analyze_workspace(project_name: str, request: WorkspaceAnalyzeRequest):
+    assert_project_registered(project_name)
     ensure_project_memory(project_name)
     max_files = _normalize_limit(request.max_files, 8, MAX_ANALYSIS_FILES)
     max_chars = _normalize_limit(request.max_chars_per_file, 12000, 30000)
@@ -405,6 +407,7 @@ Be practical and concise.
 
 @router.post("/project/{project_name}/pair/review")
 def pair_review(project_name: str, request: PairReviewRequest):
+    assert_project_registered(project_name)
     ensure_project_memory(project_name)
     max_chars = _normalize_limit(request.max_chars_per_file, 12000, 30000)
     reviewed_paths = _normalize_paths(request.paths, request.file_paths, request.include_files)
@@ -438,6 +441,7 @@ Please provide:
 
 @router.post("/project/{project_name}/pair/plan")
 def pair_plan(project_name: str, request: PairPlanRequest):
+    assert_project_registered(project_name)
     ensure_project_memory(project_name)
     max_chars = _normalize_limit(request.max_chars_per_file, 12000, 30000)
     selected_paths = _normalize_paths(request.paths, request.file_paths, request.include_files)
@@ -471,6 +475,7 @@ Please produce:
 
 @router.post("/project/{project_name}/pair/refactor-preview")
 def refactor_preview(project_name: str, request: RefactorPreviewRequest):
+    assert_project_registered(project_name)
     ensure_project_memory(project_name)
     max_chars = _normalize_limit(request.max_chars, 20000, 50000)
     target_path = _coalesce_text(request.path, request.file_path, default="")
@@ -514,6 +519,7 @@ Do not claim the file is already changed.
 
 @router.post("/project/{project_name}/cowork/instruction")
 def cowork_instruction(project_name: str, request: CoWorkInstructionRequest):
+    assert_project_registered(project_name)
     ensure_project_memory(project_name)
     max_chars = _normalize_limit(request.max_chars_per_file, 12000, 30000)
     selected_paths = _normalize_paths(request.paths, request.file_paths, request.include_files)
@@ -555,6 +561,7 @@ Respond with:
 
 @router.post("/project/{project_name}/cli/explain-command")
 def cli_explain_command(project_name: str, request: CliExplainCommandRequest):
+    assert_project_registered(project_name)
     ensure_project_memory(project_name)
     command_text = " ".join([str(x) for x in request.command])
 
@@ -583,6 +590,7 @@ Be concise and practical.
 
 @router.post("/project/{project_name}/cli/generate-command")
 def cli_generate_command(project_name: str, request: CliGenerateCommandRequest):
+    assert_project_registered(project_name)
     ensure_project_memory(project_name)
 
     prompt = f"""

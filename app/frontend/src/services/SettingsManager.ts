@@ -264,10 +264,8 @@ class SettingsManagerImpl {
       options: [
         { label: 'Ollama (Local)', value: 'ollama' },
         { label: 'Groq', value: 'groq' },
-        { label: 'Abacus AI', value: 'abacusai' },
         { label: 'OpenAI', value: 'openai' },
         { label: 'Anthropic (Claude)', value: 'anthropic' },
-        { label: 'Google (Gemini)', value: 'google' },
         { label: 'OpenRouter', value: 'openrouter' }
       ]
     },
@@ -365,6 +363,7 @@ class SettingsManagerImpl {
   constructor() {
     this.loadSettings();
     this.loadSecretsFromBackend();
+    this.syncProviderDefinitions().catch(() => null);
   }
 
   private loadSettings(): void {
@@ -439,6 +438,46 @@ class SettingsManagerImpl {
     this.settings[key] = value;
     this.saveSettings();
     this.notifyListeners();
+    this.syncBackendSetting(String(key), value).catch((error) => {
+      console.warn(`Failed to sync setting ${String(key)} to backend:`, error);
+    });
+  }
+
+  async syncProviderDefinitions(): Promise<void> {
+    const { api } = await import('@/services/api');
+    const catalog = await api.provider.list();
+    const providers = catalog.providers ?? [];
+    const labels: Record<string, string> = {
+      ollama: 'Ollama (Local)',
+      groq: 'Groq',
+      openai: 'OpenAI',
+      anthropic: 'Anthropic (Claude)',
+      openrouter: 'OpenRouter',
+    };
+    const providerDef = this.definitions.find(d => d.key === 'ai.provider');
+    if (providerDef) {
+      providerDef.options = providers.map((provider) => ({ label: labels[provider] ?? provider, value: provider }));
+      if (!providers.includes(String(this.settings['ai.provider'] || providerDef.default) as any)) {
+        this.settings['ai.provider'] = providers[0] || 'ollama';
+        this.saveSettings();
+      }
+    }
+    this.notifyListeners();
+  }
+
+  private async syncBackendSetting(key: string, value: any): Promise<void> {
+    if (key !== 'ai.provider' && key !== 'ai.model') return;
+    const { api } = await import('@/services/api');
+    if (key === 'ai.provider') {
+      await api.provider.set(String(value));
+      return;
+    }
+    const provider = String(this.settings['ai.provider'] || 'ollama');
+    if (provider === 'ollama') {
+      await api.models.activate(String(value));
+    } else {
+      await api.provider.setModel(provider as any, String(value));
+    }
   }
 
   async saveSecret(key: string, value: string): Promise<void> {

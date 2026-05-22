@@ -19,6 +19,7 @@ export default function SettingsPage() {
     const unsubscribe = SettingsManager.onChange((newSettings) => {
       setSettings(newSettings);
     });
+    SettingsManager.syncProviderDefinitions().catch(() => null);
     return unsubscribe;
   }, []);
 

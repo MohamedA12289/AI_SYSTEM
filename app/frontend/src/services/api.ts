@@ -19,26 +19,37 @@ import type {
 } from "@/types";
 
 let BASE = (import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
+let baseInitialized = false;
+let baseInitPromise: Promise<string> | null = null;
 
-async function initializeBaseUrl() {
-  if (typeof window !== 'undefined' && (window as any).cubosDesktop?.getBackendPort) {
-    try {
-      const result = await (window as any).cubosDesktop.getBackendPort();
-      if (result.ok && result.port) {
-        BASE = `http://127.0.0.1:${result.port}`;
-        console.log('[API] Using dynamic backend port:', result.port);
+async function initializeBaseUrl(): Promise<string> {
+  if (baseInitialized) return BASE;
+  if (baseInitPromise) return baseInitPromise;
+  baseInitPromise = (async () => {
+    if (typeof window !== 'undefined' && (window as any).cubosDesktop?.getBackendPort) {
+      try {
+        const result = await (window as any).cubosDesktop.getBackendPort();
+        if (result.ok && result.port) {
+          BASE = `http://127.0.0.1:${result.port}`;
+          console.log('[API] Using dynamic backend port:', result.port);
+        }
+      } catch (error) {
+        console.warn('[API] Failed to get backend port, using default:', error);
       }
-    } catch (error) {
-      console.warn('[API] Failed to get backend port, using default:', error);
     }
-  }
+    baseInitialized = true;
+    return BASE;
+  })();
+  return baseInitPromise;
 }
 
-initializeBaseUrl();
+export const apiBaseReady = initializeBaseUrl();
 
 export function getApiBase(): string { return BASE; }
+export function getApiBaseAsync(): Promise<string> { return initializeBaseUrl(); }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const base = await initializeBaseUrl();
   const headers: Record<string, string> = { ...(options.headers as Record<string, string> | undefined) };
   const body = options.body;
   if (body && !(body instanceof FormData) && !headers["Content-Type"]) {
@@ -47,7 +58,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
   let res: Response;
   try {
-    res = await fetch(`${BASE}${path}`, { ...options, headers });
+    res = await fetch(`${base}${path}`, { ...options, headers });
   } catch (error: any) {
     throw new Error(error?.message || "Failed to fetch");
   }
@@ -55,11 +66,17 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     let detail = text || `API ${res.status}`;
+    let parsedBody: any = null;
     try {
-      const parsed = JSON.parse(text);
-      detail = parsed?.detail || parsed?.message || detail;
+      parsedBody = JSON.parse(text);
+      const parsedDetail = parsedBody?.detail || parsedBody?.message;
+      detail = typeof parsedDetail === "string" ? parsedDetail : parsedDetail ? JSON.stringify(parsedDetail) : detail;
     } catch {}
-    throw new Error(detail || `API ${res.status}`);
+    const error = new Error(detail || `API ${res.status}`);
+    (error as any).status = res.status;
+    (error as any).body = parsedBody;
+    (error as any).detail = parsedBody?.detail;
+    throw error;
   }
 
   if (res.status === 204) return undefined as T;
@@ -79,6 +96,77 @@ function del<T>(path: string) {
   return request<T>(path, { method: "DELETE" });
 }
 
+type ProjectImportPayload = {
+  path?: string;
+  source_path?: string;
+  project_name?: string;
+  display_name?: string;
+  description?: string;
+  access_mode?: string;
+};
+
+type ProviderKey = "ollama" | "groq" | "openai" | "anthropic" | "openrouter";
+
+type ProviderCatalog = {
+  providers: ProviderKey[];
+  ollama?: { active: string; models: string[] };
+  groq?: { active: string; models: string[] };
+  openai?: { active: string; models: string[] };
+  anthropic?: { active: string; models: string[] };
+  openrouter?: { active: string; models: string[] };
+};
+
+function normalizeProjectImportPayload(payload: ProjectImportPayload): ProjectImportPayload {
+  const path = (payload.path || payload.source_path || "").trim();
+  return {
+    path,
+    source_path: payload.source_path,
+    project_name: payload.project_name,
+    display_name: payload.display_name,
+    description: payload.description ?? "",
+    access_mode: payload.access_mode ?? "import",
+  };
+}
+
+async function projectWorkspaceRoot(projectName: string): Promise<string> {
+  const project = await request<Project>(`/projects/${encodeURIComponent(projectName)}`);
+  const workspaceRoot = project.workspace_root || (project as any).project_path || (project as any).path;
+  if (!workspaceRoot) throw new Error(`Project ${projectName} has no workspace path.`);
+  return workspaceRoot;
+}
+
+function gitFileList(items: any[] | undefined): string[] {
+  return (items ?? [])
+    .map((item) => typeof item === "string" ? item : item?.file || item?.path || item?.name)
+    .filter(Boolean);
+}
+
+function normalizeGitStatus(raw: any) {
+  const stagedItems = raw?.staged ?? [];
+  const unstagedItems = raw?.unstaged ?? [];
+  const untrackedItems = unstagedItems.filter((item: any) => ["?", "??", "U"].includes(String(item?.status ?? item?.state ?? "")));
+  const modifiedItems = unstagedItems.filter((item: any) => !untrackedItems.includes(item));
+  return {
+    ...raw,
+    branch: raw?.branch || "main",
+    ahead: raw?.ahead || 0,
+    behind: raw?.behind || 0,
+    staged: gitFileList(stagedItems),
+    modified: gitFileList(raw?.modified ?? modifiedItems),
+    untracked: gitFileList(raw?.untracked ?? untrackedItems),
+  };
+}
+
+async function gitStatusForProjectPath(projectPath: string) {
+  const raw = await request<any>(`/api/git/status?project_path=${encodeURIComponent(projectPath)}`);
+  return normalizeGitStatus(raw);
+}
+
+async function stageGitFiles(projectPath: string, files: string[]) {
+  if (!files.length) return null;
+  return post<any>("/api/git/stage", { project_path: projectPath, files });
+}
+
 export const api = {
   health: () => request<{ status: string; phase: string }>("/"),
 
@@ -90,6 +178,8 @@ export const api = {
   provider: {
     get: () => request<{ active: string }>("/settings/provider"),
     set: (active: string) => post<{ active: string; settings: AppSettings }>("/settings/provider", { active }),
+    list: () => request<ProviderCatalog>("/settings/providers"),
+    setModel: (provider: ProviderKey, model: string) => post<{ provider: string; model: string; settings: AppSettings }>("/settings/provider/model", { provider, model }),
   },
 
   models: {
@@ -108,12 +198,17 @@ export const api = {
       const data = await request<{ projects: Project[] }>("/projects");
       return data.projects ?? [];
     },
-    get: (projectName: string) => request<Project>(`/projects/${projectName}`),
+    get: (projectName: string) => request<Project>(`/projects/${encodeURIComponent(projectName)}`),
     create: (payload: { project_name: string; display_name?: string; description?: string; project_type?: string }) =>
       post<{ created: boolean; project: Project }>("/projects/create", payload),
-    update: (projectName: string, payload: any) => patch<Project>(`/projects/${projectName}`, payload),
-    archive: (projectName: string) => post<Project>(`/projects/${projectName}/archive`, {}),
-    delete: (projectName: string) => del<{ deleted: boolean }>(`/projects/${projectName}`),
+    importExisting: (payload: ProjectImportPayload) =>
+      post<{ imported: boolean; created?: boolean; project: Project; project_name?: string; linked_source?: string; access_mode?: string }>(
+        "/projects/import",
+        normalizeProjectImportPayload(payload),
+      ),
+    update: (projectName: string, payload: any) => patch<Project>(`/projects/${encodeURIComponent(projectName)}`, payload),
+    archive: (projectName: string) => post<Project>(`/projects/${encodeURIComponent(projectName)}/archive`, {}),
+    delete: (projectName: string) => del<{ deleted: boolean }>(`/projects/${encodeURIComponent(projectName)}`),
   },
 
   chat: {
@@ -126,12 +221,12 @@ export const api = {
     summary: (projectName: string) => request<any>(`/project/${projectName}/chat/summary`),
     stream: (projectName: string, prompt: string, onToken: (t: string) => void, onDone: () => void, onError: (e: string) => void): (() => void) => {
       const ctrl = new AbortController();
-      fetch(`${BASE}/chat/stream`, {
+      initializeBaseUrl().then((base) => fetch(`${base}/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ project_name: projectName, prompt }),
         signal: ctrl.signal,
-      }).then(async (res) => {
+      })).then(async (res) => {
         const reader = res.body?.getReader();
         const decoder = new TextDecoder();
         if (!reader) { onDone(); return; }
@@ -181,12 +276,12 @@ export const api = {
       opts?: { enableTools?: boolean; onTool?: (tool: { name: string; args: any; result_preview: string }) => void }
     ): (() => void) => {
       const ctrl = new AbortController();
-      fetch(`${BASE}/api/threads/${threadId}/stream`, {
+      initializeBaseUrl().then((base) => fetch(`${base}/api/threads/${threadId}/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt, enable_tools: !!opts?.enableTools }),
         signal: ctrl.signal,
-      }).then(async (res) => {
+      })).then(async (res) => {
         const reader = res.body?.getReader();
         const decoder = new TextDecoder();
         if (!reader) { onDone(); return; }
@@ -213,7 +308,7 @@ export const api = {
       }).catch((err) => { if (err?.name !== "AbortError") onError(String(err)); });
       return () => {
         // Tell the server to stop generating, then abort the local fetch.
-        fetch(`${BASE}/api/threads/${threadId}/cancel`, { method: "POST" }).catch(() => null);
+        initializeBaseUrl().then((base) => fetch(`${base}/api/threads/${threadId}/cancel`, { method: "POST" })).catch(() => null);
         ctrl.abort();
       };
     },
@@ -249,12 +344,12 @@ export const api = {
       onError: (e: string) => void
     ): (() => void) => {
       const ctrl = new AbortController();
-      fetch(`${BASE}/project/${projectName}/command/stream`, {
+      initializeBaseUrl().then((base) => fetch(`${base}/project/${projectName}/command/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ command, timeout_seconds: 60 }),
         signal: ctrl.signal,
-      }).then(async (res) => {
+      })).then(async (res) => {
         const reader = res.body?.getReader();
         const decoder = new TextDecoder();
         if (!reader) { onDone(0); return; }
@@ -353,11 +448,12 @@ export const api = {
     transcribe: (projectName: string, path: string, model_name = "base", task = "transcribe", language = "en") => post<any>(`/project/${projectName}/media/transcribe-file`, { path, model_name, task, language }),
     voiceChat: (projectName: string, path: string, model_name = "base", task = "transcribe", language = "en") => post<any>(`/project/${projectName}/voice/chat`, { path, model_name, task, language }),
     transcribeUpload: async (projectName: string, file: File, model_name = "base", task = "transcribe"): Promise<any> => {
+      const base = await initializeBaseUrl();
       const formData = new FormData();
       formData.append("file", file);
       formData.append("model_name", model_name);
       formData.append("task", task);
-      const resp = await fetch(`${BASE}/project/${projectName}/media/transcribe-upload`, { method: "POST", body: formData });
+      const resp = await fetch(`${base}/project/${projectName}/media/transcribe-upload`, { method: "POST", body: formData });
       if (!resp.ok) throw new Error(await resp.text());
       return resp.json();
     },
@@ -377,12 +473,31 @@ export const api = {
   },
 
   git: {
-    status: (projectName: string) => request<any>(`/project/${projectName}/git/status`),
+    status: async (projectName: string) => gitStatusForProjectPath(await projectWorkspaceRoot(projectName)),
     currentBranch: (projectName: string) => request<{ branch: string }>(`/project/${projectName}/git/branch`),
-    branches: (projectName: string) => request<{ branches: string[] }>(`/project/${projectName}/git/branches`),
-    commit: (projectName: string, message: string, files?: string[]) => post<any>(`/project/${projectName}/git/commit`, { message, files }),
-    push: (projectName: string) => post<any>(`/project/${projectName}/git/push`, {}),
-    pull: (projectName: string) => post<any>(`/project/${projectName}/git/pull`, {}),
+    branches: async (projectName: string) => {
+      const projectPath = await projectWorkspaceRoot(projectName);
+      const branches = await request<string[]>(`/api/git/branches?project_path=${encodeURIComponent(projectPath)}`);
+      return { branches };
+    },
+    checkout: async (projectName: string, branch: string) => {
+      const projectPath = await projectWorkspaceRoot(projectName);
+      return request<any>(`/api/git/checkout?project_path=${encodeURIComponent(projectPath)}&branch=${encodeURIComponent(branch)}`, { method: "POST" });
+    },
+    stage: async (projectName: string, files: string[]) => stageGitFiles(await projectWorkspaceRoot(projectName), files),
+    unstage: async (projectName: string, files: string[]) => post<any>("/api/git/unstage", { project_path: await projectWorkspaceRoot(projectName), files }),
+    commit: async (projectName: string, message: string, files?: string[]) => {
+      const projectPath = await projectWorkspaceRoot(projectName);
+      if (files?.length) {
+        await stageGitFiles(projectPath, files);
+      } else {
+        const status = await gitStatusForProjectPath(projectPath);
+        await stageGitFiles(projectPath, [...status.modified, ...status.untracked]);
+      }
+      return post<any>("/api/git/commit", { project_path: projectPath, message });
+    },
+    push: async (projectName: string) => post<any>("/api/git/push", { project_path: await projectWorkspaceRoot(projectName) }),
+    pull: async (projectName: string) => post<any>("/api/git/pull", { project_path: await projectWorkspaceRoot(projectName) }),
     cloneProject: (repoUrl: string, projectName?: string) => post<any>(`/projects/clone-git`, { repo_url: repoUrl, project_name: projectName }),
     init: (project_path: string, initial_commit = true) => post<any>(`/api/git/init`, { project_path, initial_commit }),
     setRemote: (project_path: string, remote_url: string, name = "origin") => post<any>(`/api/git/set-remote`, { project_path, remote_url, name }),

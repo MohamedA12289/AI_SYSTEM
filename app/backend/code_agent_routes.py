@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +14,7 @@ from ollama_client import ask_ollama
 from command_tools import run_safe_command, normalize_command_list, validate_command, normalize_timeout
 from memory import read_memory_entries, write_memory_entries, validate_project_name
 from config import ALLOWED_EXECUTABLES
+from project_registry import assert_project_registered
 
 router = APIRouter()
 
@@ -102,12 +102,28 @@ def _read_file_snippet(project_name: str, rel_path: str, max_chars: int = 1500) 
         return ""
 
 
+def _read_memory_entry_list(project_name: str) -> list[dict]:
+    data = read_memory_entries(project_name)
+    if isinstance(data, dict):
+        entries = data.get("entries", [])
+    elif isinstance(data, list):
+        entries = data
+    else:
+        entries = []
+    return [entry for entry in entries if isinstance(entry, dict)]
+
+
+def _write_memory_entry_list(project_name: str, entries: list[dict]) -> dict:
+    return write_memory_entries(project_name, {"entries": entries})
+
+
 class WorkspaceMapRequest(BaseModel):
     focus: str = ""
 
 
 @router.post("/project/{project_name}/coagent/workspace-map")
 def workspace_map(project_name: str, body: WorkspaceMapRequest):
+    assert_project_registered(project_name)
     validate_project_name(project_name)
     files = _walk_project(project_name)
     categorized: dict[str, list[str]] = {}
@@ -172,6 +188,7 @@ class FileTargetsRequest(BaseModel):
 
 @router.post("/project/{project_name}/coagent/file-targets")
 def file_targets(project_name: str, body: FileTargetsRequest):
+    assert_project_registered(project_name)
     validate_project_name(project_name)
     files = _walk_project(project_name, max_files=200)
     file_list = [f["path"] for f in files]
@@ -226,6 +243,7 @@ class WhyFailingRequest(BaseModel):
 
 @router.post("/project/{project_name}/coagent/why-failing")
 def why_failing(project_name: str, body: WhyFailingRequest):
+    assert_project_registered(project_name)
     validate_project_name(project_name)
     files = _walk_project(project_name, max_files=150)
     file_list = [f["path"] for f in files]
@@ -285,6 +303,7 @@ class WiringTraceRequest(BaseModel):
 
 @router.post("/project/{project_name}/coagent/wiring-trace")
 def wiring_trace(project_name: str, body: WiringTraceRequest):
+    assert_project_registered(project_name)
     validate_project_name(project_name)
     files = _walk_project(project_name, max_files=200)
     file_list = [f["path"] for f in files]
@@ -334,6 +353,7 @@ Respond ONLY with this JSON:
 
 @router.post("/project/{project_name}/coagent/cleanup-scan")
 def cleanup_scan(project_name: str):
+    assert_project_registered(project_name)
     validate_project_name(project_name)
     root = get_project_root(project_name)
 
@@ -379,6 +399,7 @@ def cleanup_scan(project_name: str):
 
 @router.post("/project/{project_name}/coagent/api-contracts")
 def api_contracts(project_name: str):
+    assert_project_registered(project_name)
     validate_project_name(project_name)
     files = _walk_project(project_name, max_files=200)
 
@@ -444,6 +465,7 @@ class ProjectStateRequest(BaseModel):
 
 @router.post("/project/{project_name}/coagent/project-state")
 def project_state(project_name: str, body: ProjectStateRequest):
+    assert_project_registered(project_name)
     validate_project_name(project_name)
     files = _walk_project(project_name, max_files=200)
     categorized: dict[str, list[str]] = {}
@@ -453,7 +475,7 @@ def project_state(project_name: str, body: ProjectStateRequest):
 
     memory_entries = []
     try:
-        raw_mem = read_memory_entries(project_name)
+        raw_mem = _read_memory_entry_list(project_name)
         memory_entries = [{"key": e.get("key", ""), "value": e.get("value", "")} for e in raw_mem[:10]]
     except Exception:
         pass
@@ -502,6 +524,7 @@ class RunCommandRequest(BaseModel):
 
 @router.post("/project/{project_name}/coagent/run-command")
 def run_command(project_name: str, body: RunCommandRequest):
+    assert_project_registered(project_name)
     validate_project_name(project_name)
     try:
         result = run_safe_command(project_name, body.command, body.timeout_seconds)
@@ -519,10 +542,11 @@ class CodingMemoryRequest(BaseModel):
 
 @router.post("/project/{project_name}/coagent/coding-memory")
 def coding_memory(project_name: str, body: CodingMemoryRequest):
+    assert_project_registered(project_name)
     validate_project_name(project_name)
     if body.action == "read":
         try:
-            entries = read_memory_entries(project_name)
+            entries = _read_memory_entry_list(project_name)
             return {"entries": entries}
         except Exception:
             return {"entries": []}
@@ -530,14 +554,14 @@ def coding_memory(project_name: str, body: CodingMemoryRequest):
         if not body.key or not body.value:
             raise HTTPException(status_code=400, detail="key and value required for write")
         try:
-            entries = read_memory_entries(project_name)
+            entries = _read_memory_entry_list(project_name)
             existing = next((e for e in entries if e.get("key") == body.key), None)
             if existing:
                 existing["value"] = body.value
                 existing["pinned"] = body.pinned
             else:
                 entries.append({"key": body.key, "value": body.value, "pinned": body.pinned})
-            write_memory_entries(project_name, entries)
+            _write_memory_entry_list(project_name, entries)
             return {"saved": True, "key": body.key}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))

@@ -95,6 +95,8 @@ def api_get_thread(thread_id: str):
         return {"thread": thread}
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -117,6 +119,8 @@ def api_update_thread_title(thread_id: str, req: ThreadUpdateTitleRequest):
         return {"thread": thread}
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -139,6 +143,8 @@ def api_delete_thread(thread_id: str):
         return {"deleted": True, "thread": deleted_thread}
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -159,6 +165,8 @@ def api_get_thread_messages(
         return result
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -198,6 +206,8 @@ def api_send_thread_message(thread_id: str, req: ThreadMessageRequest):
         return {"message": message, "auto_titled": auto_titled}
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -397,6 +407,8 @@ def api_stream_thread_chat(thread_id: str, request: ThreadStreamRequest):
         )
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -420,5 +432,7 @@ def api_count_thread_messages(thread_id: str):
         return {"count": count}
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
