@@ -35,6 +35,7 @@ from ingest_store import (
     write_text_artifact,
     get_project_ingest_root,
 )
+from process_utils import run_hidden
 
 try:
     from tika import parser as tika_parser  # type: ignore
@@ -181,7 +182,7 @@ def _ffprobe_metadata(path: Path) -> dict:
         "-show_streams",
         str(path),
     ]
-    result = subprocess.run(command, capture_output=True, text=True)
+    result = run_hidden(command, capture_output=True, text=True, timeout=30)
     if result.returncode != 0:
         return {
             "probe_ok": False,

@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from file_tools import get_project_root
+from process_utils import run_hidden
 
 try:
     import git as _git  # GitPython
@@ -36,7 +37,7 @@ def _repo_root(project_name: str) -> Path:
 
 
 def _run_cli(cwd: Path, args: List[str], check: bool = False) -> Dict[str, Any]:
-    proc = subprocess.run(
+    proc = run_hidden(
         ["git"] + args,
         cwd=str(cwd),
         capture_output=True,

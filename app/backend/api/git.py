@@ -7,6 +7,8 @@ from pydantic import BaseModel
 from fastapi.responses import StreamingResponse
 import asyncio
 
+from process_utils import run_hidden, with_hidden_subprocess
+
 router = APIRouter(prefix="/api/git", tags=["git"])
 
 
@@ -50,16 +52,25 @@ class PushPullRequest(BaseModel):
 
 def run_git_command(project_path: str, args: List[str]) -> subprocess.CompletedProcess:
     try:
-        result = subprocess.run(
+        result = run_hidden(
             ["git"] + args,
             cwd=project_path,
             capture_output=True,
             text=True,
-            check=True
+            check=True,
+            timeout=60,
         )
         return result
     except subprocess.CalledProcessError as e:
         raise HTTPException(status_code=400, detail=f"Git error: {e.stderr}")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail=f"Git command timed out: {' '.join(args)}")
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+async def run_git_command_async(project_path: str, args: List[str]) -> subprocess.CompletedProcess:
+    return await asyncio.to_thread(run_git_command, project_path, args)
 
 
 @router.get("/status")
@@ -67,10 +78,10 @@ async def get_git_status(project_path: str) -> GitStatusResponse:
     if not os.path.exists(os.path.join(project_path, ".git")):
         raise HTTPException(status_code=400, detail="Not a git repository")
     
-    branch_result = run_git_command(project_path, ["branch", "--show-current"])
+    branch_result = await run_git_command_async(project_path, ["branch", "--show-current"])
     branch = branch_result.stdout.strip() or "HEAD detached"
     
-    status_result = run_git_command(project_path, ["status", "--porcelain"])
+    status_result = await run_git_command_async(project_path, ["status", "--porcelain"])
     staged = []
     unstaged = []
     
@@ -104,7 +115,7 @@ async def get_git_status(project_path: str) -> GitStatusResponse:
     ahead = 0
     behind = 0
     try:
-        rev_list = run_git_command(project_path, ["rev-list", "--left-right", "--count", "HEAD...@{u}"])
+        rev_list = await run_git_command_async(project_path, ["rev-list", "--left-right", "--count", "HEAD...@{u}"])
         parts = rev_list.stdout.strip().split()
         if len(parts) == 2:
             ahead = int(parts[0])
@@ -124,14 +135,14 @@ async def get_git_status(project_path: str) -> GitStatusResponse:
 @router.post("/stage")
 async def stage_files(request: StageFilesRequest):
     for file in request.files:
-        run_git_command(request.project_path, ["add", file])
+        await run_git_command_async(request.project_path, ["add", file])
     return {"success": True, "message": f"Staged {len(request.files)} file(s)"}
 
 
 @router.post("/unstage")
 async def unstage_files(request: StageFilesRequest):
     for file in request.files:
-        run_git_command(request.project_path, ["restore", "--staged", file])
+        await run_git_command_async(request.project_path, ["restore", "--staged", file])
     return {"success": True, "message": f"Unstaged {len(request.files)} file(s)"}
 
 
@@ -140,25 +151,25 @@ async def commit_changes(request: CommitRequest):
     if not request.message:
         raise HTTPException(status_code=400, detail="Commit message cannot be empty")
     
-    result = run_git_command(request.project_path, ["commit", "-m", request.message])
+    result = await run_git_command_async(request.project_path, ["commit", "-m", request.message])
     return {"success": True, "message": "Commit created", "output": result.stdout}
 
 
 @router.post("/push")
 async def push_changes(request: PushPullRequest):
-    result = run_git_command(request.project_path, ["push"])
+    result = await run_git_command_async(request.project_path, ["push"])
     return {"success": True, "output": result.stdout + result.stderr}
 
 
 @router.post("/pull")
 async def pull_changes(request: PushPullRequest):
-    result = run_git_command(request.project_path, ["pull"])
+    result = await run_git_command_async(request.project_path, ["pull"])
     return {"success": True, "output": result.stdout + result.stderr}
 
 
 @router.get("/branches")
 async def list_branches(project_path: str) -> List[str]:
-    result = run_git_command(project_path, ["branch", "--list"])
+    result = await run_git_command_async(project_path, ["branch", "--list"])
     branches = []
     for line in result.stdout.splitlines():
         branch = line.strip().lstrip("* ")
@@ -169,15 +180,17 @@ async def list_branches(project_path: str) -> List[str]:
 
 @router.post("/checkout")
 async def checkout_branch(project_path: str, branch: str):
-    result = run_git_command(project_path, ["checkout", branch])
+    result = await run_git_command_async(project_path, ["checkout", branch])
     return {"success": True, "output": result.stdout}
 
 
 async def stream_clone_progress(url: str, target_path: str):
+    extra = with_hidden_subprocess({})
     process = await asyncio.create_subprocess_exec(
         "git", "clone", "--progress", url, target_path,
         stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
+        stderr=asyncio.subprocess.PIPE,
+        **extra,
     )
     
     while True:
@@ -213,12 +226,13 @@ async def init_repository(request: InitRepoRequest):
     if (proj / ".git").exists():
         return {"success": True, "already_initialized": True}
     try:
-        subprocess.run(["git", "init"], cwd=str(proj), capture_output=True, text=True, check=True)
+        await asyncio.to_thread(run_hidden, ["git", "init"], cwd=str(proj), capture_output=True, text=True, check=True, timeout=60)
         if request.initial_commit:
-            subprocess.run(["git", "add", "-A"], cwd=str(proj), capture_output=True, text=True)
-            commit = subprocess.run(
+            await asyncio.to_thread(run_hidden, ["git", "add", "-A"], cwd=str(proj), capture_output=True, text=True, timeout=60)
+            commit = await asyncio.to_thread(
+                run_hidden,
                 ["git", "commit", "-m", "Initial commit", "--allow-empty"],
-                cwd=str(proj), capture_output=True, text=True,
+                cwd=str(proj), capture_output=True, text=True, timeout=60,
             )
             return {
                 "success": True,
@@ -237,10 +251,11 @@ async def set_remote(request: SetRemoteRequest):
     if not (proj / ".git").exists():
         raise HTTPException(status_code=400, detail="Not a git repository")
     name = request.name or "origin"
-    subprocess.run(["git", "remote", "remove", name], cwd=str(proj), capture_output=True, text=True)
-    add = subprocess.run(
+    await asyncio.to_thread(run_hidden, ["git", "remote", "remove", name], cwd=str(proj), capture_output=True, text=True, timeout=60)
+    add = await asyncio.to_thread(
+        run_hidden,
         ["git", "remote", "add", name, request.remote_url],
-        cwd=str(proj), capture_output=True, text=True,
+        cwd=str(proj), capture_output=True, text=True, timeout=60,
     )
     if add.returncode != 0:
         raise HTTPException(status_code=400, detail=f"Failed to set remote: {add.stderr}")

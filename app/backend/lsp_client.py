@@ -18,6 +18,8 @@ import threading
 import atexit
 from typing import Any, Dict, List, Optional, Tuple
 
+from process_utils import with_hidden_subprocess
+
 # --- language -> server command --------------------------------------------------
 _PYLSP_CMD: List[str] = [sys.executable, "-m", "pylsp"]
 
@@ -69,16 +71,14 @@ class _LspServer:
         self._initialized = False
 
     def start(self) -> None:
-        creationflags = 0
-        if os.name == "nt":
-            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         self.proc = subprocess.Popen(
             self.cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            creationflags=creationflags,
-            bufsize=0,
+            **with_hidden_subprocess({
+                "stdin": subprocess.PIPE,
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.DEVNULL,
+                "bufsize": 0,
+            }),
         )
         self._reader = threading.Thread(target=self._read_loop, daemon=True)
         self._reader.start()

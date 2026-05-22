@@ -4,6 +4,7 @@ import tempfile
 import subprocess
 
 from file_tools import resolve_safe_path
+from process_utils import run_hidden
 
 _ALLOWED_AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".flac", ".aac", ".ogg", ".wma", ".webm"}
 _ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}
@@ -31,11 +32,12 @@ def _extract_audio_for_transcription(source_path: Path) -> tuple[Path, Path | No
         raise ValueError("File is not a supported audio or video type.")
     temp_dir = Path(tempfile.mkdtemp(prefix="cubos_media_"))
     output_audio = temp_dir / "extracted_audio.wav"
-    result = subprocess.run(
+    result = run_hidden(
         ["ffmpeg", "-y", "-i", str(source_path), "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", str(output_audio)],
         capture_output=True,
         text=True,
         shell=False,
+        timeout=120,
     )
     if result.returncode != 0 or not output_audio.exists():
         stderr = (result.stderr or "").strip()

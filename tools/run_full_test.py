@@ -20,6 +20,7 @@ import os
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import wave
 from datetime import datetime
@@ -56,7 +57,7 @@ PARAM_STUBS: Dict[str, str] = {
 
 # Body templates by path keyword
 def _nongit_fixture_path() -> str:
-    path = REPO / "workspaces" / "_codex_harness_nongit"
+    path = Path(tempfile.gettempdir()) / "cubos_codex_harness_nongit"
     path.mkdir(parents=True, exist_ok=True)
     return str(path)
 

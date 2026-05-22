@@ -8,6 +8,7 @@ from config import (
     MAX_TOOL_RESULT_CHARS,
 )
 from file_tools import get_project_root
+from process_utils import run_hidden
 
 def trim_command_output(value: str, limit: int = MAX_TOOL_RESULT_CHARS) -> str:
     if value is None:
@@ -80,7 +81,7 @@ def run_safe_command(
     project_root = get_project_root(project_name)
 
     try:
-        result = subprocess.run(
+        result = run_hidden(
             normalized_command,
             cwd=str(project_root),
             capture_output=True,

@@ -9,6 +9,7 @@ from config import (
     ANTHROPIC_MODEL, ANTHROPIC_AVAILABLE_MODELS,
     OPENROUTER_MODEL, OPENROUTER_AVAILABLE_MODELS,
 )
+from process_utils import run_hidden
 
 VALID_PROVIDERS = {"ollama", "groq", "openai", "anthropic", "openrouter"}
 
@@ -138,7 +139,7 @@ def list_provider_models() -> dict:
 def list_models() -> dict:
     active = get_active_model()
     try:
-        result = subprocess.run(["ollama", "list"], capture_output=True, text=True, timeout=20)
+        result = run_hidden(["ollama", "list"], capture_output=True, text=True, timeout=20)
         lines = result.stdout.splitlines()
         models = []
         for line in lines[1:]:
